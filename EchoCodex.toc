@@ -1,0 +1,10 @@
+## Interface: 30300
+## Title: Echo Codex
+## Notes: Search Project Ebonhold's Echoes, build a wishlist, and track down where to farm each Echo's Tome.
+## Author: Echo Codex
+## Version: 1.2.0
+## SavedVariables: EchoCodexDB
+
+Data_Echoes.lua
+Data_Tomes.lua
+Core.lua
