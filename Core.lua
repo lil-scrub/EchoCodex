@@ -507,6 +507,12 @@ end
 -- The Current Build tab diffs this narrower set against the wishlist.
 local currentBuildIds = {}
 
+-- id -> how many times that exact tier was picked/stacked this run, per the
+-- single source that reported the most (see ScanForCurrentBuild below).
+-- Absent/1 means "picked once" -- EC.GetCurrentBuildCount treats both the
+-- same, so callers don't need a nil check.
+local currentBuildCounts = {}
+
 -- Collect every spellId (200000-299999) nested anywhere under `entry`.
 local function CollectSpellIds(entry, seen, out)
   if type(entry) ~= "table" or seen[entry] then return end
@@ -519,28 +525,48 @@ local function CollectSpellIds(entry, seen, out)
 end
 
 -- `t` is granted/locked perks, keyed by Echo name (or by slot index for
--- locked) -> one entry per stack the player holds of that perk (see
--- "stack"/"maxStack" fields). GetGrantedPerks can report DIFFERENT
--- quality-tier spellIds across a single Echo's stacks even when the
--- character only actually has ONE tier right now (confirmed live: two
--- Swift Step stacks, both blue in-game, reported as one blue + one green
--- spellId) -- so within one entry, trust only the highest tier found among
--- rows we track, not every distinct id GetGrantedPerks happened to report.
+-- locked). A granted-perks entry nests one sub-table PER STACK the player
+-- holds of that perk ({1={spellId=X, quality=..}, 2={spellId=Y, quality=..},
+-- ...} -- see the "stack"/"maxStack" fields); a locked-perks entry is a
+-- single flat record instead (one slot, one pick). Stack count is therefore
+-- how many sub-tables `entry` itself directly contains (1 if it's already
+-- flat), completely separate from WHICH tier to trust:
+--
+-- GetGrantedPerks can report DIFFERENT quality-tier spellIds across a
+-- single Echo's stacks even when the character holds the SAME tier in
+-- both (confirmed live: two Swift Step stacks, both blue in-game, reported
+-- as one blue + one stale green spellId) -- so which id to display comes
+-- from the highest tier found across every stack, while the stack COUNT
+-- comes from the number of stacks itself, regardless of what tier each one
+-- claims. Otherwise a stale per-stack tier tag would silently undercount a
+-- real duplicate down to "picked once".
 local function ScanForCurrentBuild(t)
   if type(t) ~= "table" then return end
   for _, entry in pairs(t) do
     if type(entry) == "table" then
-      local foundIds = {}
-      CollectSpellIds(entry, {}, foundIds)
+      local subEntries = {}
+      for _, v in pairs(entry) do
+        if type(v) == "table" then subEntries[#subEntries + 1] = v end
+      end
+      -- Not actually nested (a flat locked-slot record) -- treat the whole
+      -- entry as its own single stack.
+      if #subEntries == 0 then subEntries[1] = entry end
 
+      local foundIds = {}
       local bestId, bestQ
-      for id in pairs(foundIds) do
-        local echo = EchoCodexDataEchoes[id]
-        if echo and (not bestQ or echo.q > bestQ) then bestId, bestQ = id, echo.q end
+      for _, sub in ipairs(subEntries) do
+        local ids = {}
+        CollectSpellIds(sub, {}, ids)
+        for id in pairs(ids) do
+          foundIds[id] = true
+          local echo = EchoCodexDataEchoes[id]
+          if echo and (not bestQ or echo.q > bestQ) then bestId, bestQ = id, echo.q end
+        end
       end
 
       if bestId then
         currentBuildIds[bestId] = true
+        currentBuildCounts[bestId] = math.max(currentBuildCounts[bestId] or 0, #subEntries)
       else
         -- Nothing found matches one of our own rows (e.g. only a sibling
         -- tier we don't track) -- seed the raw ids so ExpandCurrentBuildGroups
@@ -1158,6 +1184,7 @@ end
 function EC.RefreshOwnedCache()
   ownedIds, ownedNames = {}, {}
   currentBuildIds = {}
+  currentBuildCounts = {}
   foundEchoesTab = false
 
   -- Kept as a secondary check: permanently-learned Tomes, if they ever do
@@ -1247,6 +1274,13 @@ end
 -- active picks (GetGrantedPerks), not merely ever-discovered.
 function EC.IsEchoInCurrentBuild(echo)
   return currentBuildIds[echo.id] == true
+end
+
+-- How many times this exact tier was picked/stacked this run. 1 (not 0)
+-- when there's no count on record, so a plain "== 1" check is enough to
+-- decide whether a "picked Nx" badge is worth showing.
+function EC.GetCurrentBuildCount(echo)
+  return currentBuildCounts[echo.id] or 1
 end
 
 local mainFrame, tabButtons, tabFrames, activeTab
@@ -1818,6 +1852,31 @@ function EC.DeleteActiveWishlist()
   return true, oldName
 end
 
+-- "<name> Copy", then "<name> Copy 2", "<name> Copy 3", ... -- first name
+-- in that sequence that isn't already taken.
+local function SuggestDuplicateName(baseName)
+  local candidate = baseName .. " Copy"
+  if not charDB.wishlists[candidate] then return candidate end
+  local n = 2
+  while charDB.wishlists[baseName .. " Copy " .. n] do n = n + 1 end
+  return baseName .. " Copy " .. n
+end
+
+function EC.DuplicateActiveWishlist(newName)
+  newName = strtrim(newName or "")
+  if newName == "" then return false, "Name can't be empty." end
+  if charDB.wishlists[newName] then
+    return false, "A wishlist named \"" .. newName .. "\" already exists."
+  end
+  local source = charDB.wishlists[charDB.activeWishlist]
+  local copy = { items = {}, found = {} }
+  for id in pairs(source.items) do copy.items[id] = true end
+  for key in pairs(source.found) do copy.found[key] = true end
+  charDB.wishlists[newName] = copy
+  EC.SetActiveWishlist(newName)
+  return true
+end
+
 -- This client doesn't reliably expose the hasEditBox popup's edit box as
 -- self.editBox -- fall back to the classic $parentEditBox global name, same
 -- workaround EbonholdHub uses for its own rename-gear-set popup.
@@ -1887,7 +1946,7 @@ StaticPopupDialogs["ECHOCODEX_RENAME_WISHLIST"] = {
 }
 
 StaticPopupDialogs["ECHOCODEX_DELETE_WISHLIST"] = {
-  text = "Delete wishlist \"%s\"? This removes its items and checklist progress permanently.",
+  text = "Delete wishlist \"%s\"? This removes its items and Missing Tomes progress permanently.",
   button1 = "Delete",
   button2 = "Cancel",
   OnAccept = function()
@@ -1896,6 +1955,36 @@ StaticPopupDialogs["ECHOCODEX_DELETE_WISHLIST"] = {
       DEFAULT_CHAT_FRAME:AddMessage("|cffffd100[Echo Codex]|r Deleted wishlist \"" .. removedName .. "\".")
     end
   end,
+  timeout = 0,
+  whileDead = true,
+  hideOnEscape = true,
+  preferredIndex = 3,
+}
+
+StaticPopupDialogs["ECHOCODEX_DUPLICATE_WISHLIST"] = {
+  text = "Name for the duplicate of \"%s\":",
+  button1 = "Duplicate",
+  button2 = "Cancel",
+  hasEditBox = true,
+  maxLetters = 40,
+  OnShow = function(self)
+    local editBox = ResolvePopupEditBox(self)
+    if editBox then
+      editBox:SetText(SuggestDuplicateName(charDB.activeWishlist))
+      editBox:HighlightText()
+      editBox:SetFocus()
+    end
+  end,
+  OnAccept = function(self)
+    local editBox = ResolvePopupEditBox(self)
+    local ok, err = EC.DuplicateActiveWishlist(editBox and editBox:GetText())
+    if not ok then DEFAULT_CHAT_FRAME:AddMessage("|cffffd100[Echo Codex]|r " .. err) end
+  end,
+  EditBoxOnEnterPressed = function(self)
+    local parent = self:GetParent()
+    if parent and parent.button1 then parent.button1:Click() end
+  end,
+  EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
   timeout = 0,
   whileDead = true,
   hideOnEscape = true,
@@ -1965,6 +2054,12 @@ local function BuildWishlistTab(parent)
     StaticPopup_Show("ECHOCODEX_DELETE_WISHLIST", charDB.activeWishlist)
   end)
 
+  local duplicateWishlistBtn = CreateFlatButton(f, "EchoCodexDuplicateWishlistBtn", 86, 20, "Duplicate")
+  duplicateWishlistBtn:SetPoint("LEFT", deleteWishlistBtn, "RIGHT", 6, 0)
+  duplicateWishlistBtn:HookScript("OnClick", function()
+    StaticPopup_Show("ECHOCODEX_DUPLICATE_WISHLIST", charDB.activeWishlist)
+  end)
+
   local hint = f:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
   -- Y comes from the dropdown row's bottom, but X is pinned back to the tab's
   -- left margin (via wishlistLabel) rather than the dropdown's own position --
@@ -1975,7 +2070,7 @@ local function BuildWishlistTab(parent)
   hint:SetWidth(FRAME_WIDTH - 60)
   hint:SetJustifyH("LEFT")
   hint:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
-  hint:SetText("Echoes you're planning to pick up. Add them from the Browse tab. Wishlist items that need a Tome show up on the Checklist tab so you can track down and mark off where to farm them.")
+  hint:SetText("Echoes you're planning to pick up. Add them from the Browse tab. Wishlist items that need a Tome show up on the Missing Tomes tab so you can track down and mark off where to farm them.")
 
   local importLabel = f:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
   importLabel:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -14)
@@ -2292,7 +2387,13 @@ local function CurrentBuildRowFactory(parent, i)
   row.statusText = row:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
   row.statusText:SetPoint("LEFT", row.nameText, "RIGHT", 6, 0)
   row.statusText:SetJustifyH("LEFT")
-  row.statusText:SetWidth(220)
+  row.statusText:SetWidth(190)
+
+  row.tomeText = row:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  row.tomeText:SetPoint("LEFT", row.statusText, "RIGHT", 6, 0)
+  row.tomeText:SetJustifyH("LEFT")
+  row.tomeText:SetWidth(110)
+  row.tomeText:SetWordWrap(false)
 
   row:SetScript("OnEnter", function(self)
     if not self.echo then return end
@@ -2314,9 +2415,29 @@ end
 local function CurrentBuildUpdateRow(row, entry)
   row.echo = entry.echo
   local c = QUALITY_COLORS[entry.echo.q]
-  row.nameText:SetText(entry.echo.n)
+  local name = entry.echo.n
+  -- Only "have"/"reroll" rows are actually backed by currentBuildIds --
+  -- "missing" rows aren't in the current build at all, so GetCurrentBuildCount
+  -- would just report its harmless default of 1 (no badge) for those anyway.
+  local count = EC.GetCurrentBuildCount(entry.echo)
+  if (entry.status == "have" or entry.status == "reroll") and count > 1 then
+    name = name .. "  |cff71d5ffx" .. count .. "|r"
+  end
+  row.nameText:SetText(name)
   row.nameText:SetTextColor(c.r, c.g, c.b)
   row.statusText:SetText(CURRENT_BUILD_STATUS[entry.status].label)
+
+  -- t=false Echoes are auto-learned while leveling -- no Tome to be
+  -- missing, so leave the column blank rather than flagging every one of
+  -- them. Otherwise: known already (via EC.IsEchoKnown, same signal that
+  -- drives the Missing Tomes tab's auto-check) means its Tome is in hand;
+  -- unknown means you don't actually have permanent access to this Echo
+  -- yet, even if it's active in your build (or wishlisted) this run.
+  if entry.echo.t and not EC.IsEchoKnown(entry.echo) then
+    row.tomeText:SetText("|cfff87171Tome missing|r")
+  else
+    row.tomeText:SetText("")
+  end
 end
 
 function EC.RefreshCurrentBuild()
