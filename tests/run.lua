@@ -20,7 +20,9 @@ local ADDON_DIR = ".."
 local TOC_ORDER = {
   "Data_Echoes.lua", "Data_Tomes.lua",
   "Init.lua", "Widgets.lua", "DB.lua", "Util.lua",
-  "Ownership.lua", "Debug.lua", "Core.lua",
+  "Ownership.lua", "Debug.lua", "ImportExport.lua",
+  "Tab_Browse.lua", "Wishlists.lua", "Tab_MissingTomes.lua",
+  "Tab_CurrentBuild.lua", "Core.lua",
 }
 
 ----------------------------------------------------------------------
@@ -349,6 +351,66 @@ test("switching wishlists repoints the live item table", function()
   ns.activeWishlistItems[QUICK_HANDS_BLUE] = true
   EC.CreateWishlist("Empty One")
   assertFalse(ns.activeWishlistItems[QUICK_HANDS_BLUE], "new list starts empty")
+end)
+
+----------------------------------------------------------------------
+-- Tests: tab registry
+--
+-- Tabs register themselves in ns.tabs instead of exposing widgets, so the
+-- main frame can build/switch/refresh without reaching into another file.
+----------------------------------------------------------------------
+
+print("\n-- tab registry --")
+
+test("every tab in tabOrder registers a label and a build function", function()
+  local ns = loadAddon()
+  assertEq(#ns.tabOrder, 4, "tab count")
+  for _, name in ipairs(ns.tabOrder) do
+    local tab = ns.tabs[name]
+    assertTrue(tab, "tab registered: " .. name)
+    assertEq(type(tab.label), "string", "label on " .. name)
+    assertEq(type(tab.build), "function", "build on " .. name)
+    assertEq(type(tab.refresh), "function", "refresh on " .. name)
+    assertEq(type(tab.onSelect), "function", "onSelect on " .. name)
+  end
+end)
+
+test("no tab registers a key missing from tabOrder", function()
+  local ns = loadAddon()
+  local ordered = {}
+  for _, name in ipairs(ns.tabOrder) do ordered[name] = true end
+  for name in pairs(ns.tabs) do
+    assertTrue(ordered[name], "unreachable tab registered: " .. tostring(name))
+  end
+end)
+
+test("RefreshAll refreshes every registered tab", function()
+  local ns = loadAddonReady()
+  _G.ProjectEbonhold = grantedPerks({})
+  local seen = {}
+  for _, name in ipairs(ns.tabOrder) do
+    local tab, realRefresh = ns.tabs[name], ns.tabs[name].refresh
+    tab.refresh = function(...) seen[name] = true; return realRefresh(...) end
+  end
+  ns.EC.RefreshAll()
+  for _, name in ipairs(ns.tabOrder) do
+    assertTrue(seen[name], "refreshed " .. name)
+  end
+end)
+
+test("switching wishlists resets the wishlist-scoped scroll offsets", function()
+  local ns = loadAddonReady()
+  local reset = {}
+  for _, name in ipairs(ns.tabOrder) do
+    local tab = ns.tabs[name]
+    if tab.resetScroll then
+      local real = tab.resetScroll
+      tab.resetScroll = function(...) reset[name] = true; return real(...) end
+    end
+  end
+  ns.EC.CreateWishlist("Scroll Test")
+  assertTrue(reset.wishlist, "wishlist scroll reset")
+  assertTrue(reset.checklist, "checklist scroll reset")
 end)
 
 ----------------------------------------------------------------------

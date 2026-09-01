@@ -66,6 +66,10 @@ end
 
 ns.DEFAULT_WISHLIST_NAME = "Default"
 
+-- The player's class file token ("WARLOCK"), used by the Browse tab's
+-- "My Class" filter and stamped into wishlist export strings.
+ns.myClassFile = select(2, UnitClass("player"))
+
 ----------------------------------------------------------------------
 -- Flat theme
 --
@@ -106,3 +110,24 @@ ns.EC.state = {
   role = nil,
   tomeOnly = false,
 }
+
+----------------------------------------------------------------------
+-- Tab registry
+--
+-- Each Tab_*.lua / Wishlists.lua file registers itself here instead of
+-- exposing its widgets, so the main frame can build, switch, and refresh
+-- tabs without any file reaching into another's frames. Each entry:
+--
+--   label        text on the tab button
+--   build(parent)  -> the tab's content frame, called once at ADDON_LOADED
+--   onSelect()     when this tab becomes the visible one
+--   refresh()      full rebuild of its contents (used by EC.RefreshAll)
+--   resetScroll()  optional; called when the active wishlist changes, so a
+--                  wishlist-scoped list starts at the top instead of
+--                  holding the previous list's scroll offset
+--
+-- tabOrder fixes the left-to-right button order; the keys must match.
+----------------------------------------------------------------------
+
+ns.tabs = {}
+ns.tabOrder = { "browse", "wishlist", "checklist", "currentbuild" }

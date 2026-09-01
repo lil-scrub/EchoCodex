@@ -16,4 +16,9 @@ DB.lua
 Util.lua
 Ownership.lua
 Debug.lua
+ImportExport.lua
+Tab_Browse.lua
+Wishlists.lua
+Tab_MissingTomes.lua
+Tab_CurrentBuild.lua
 Core.lua
