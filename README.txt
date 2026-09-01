@@ -17,7 +17,7 @@ INSTALL
 
 USE
 ---
-/ec  or  /echocodex   opens the window (same command closes it, ESC also works)
+/eco  or  /echocodex   opens the window (same command closes it, ESC also works)
 
 Browse tab
   - Type in the search box to match against BOTH the Echo name and its full
@@ -64,7 +64,7 @@ Wishlist tab
     named so that scanner skips it.
   - "Remove non-Tome" button: drops every wishlist item that's learned
     automatically while leveling (no Tome to farm for those, so there's
-    nothing for the Checklist to track). Same as typing "/ec cleanup".
+    nothing for the Checklist to track). Same as typing "/eco cleanup".
   - "Export" button: the reverse of Import -- produces an EBH1 string for
     the current wishlist (already selected in the popup, Ctrl+A/Ctrl+C to
     copy) that pastes straight into Nexus's own Import dialog, EbonholdHub,
@@ -101,7 +101,7 @@ signal for auto-learned (non-Tome) Echoes, which have no Tome/discovery
 record at all. A spellbook "Echoes" tab was also tried early on, on the
 assumption that's where learned Tomes show up; that tab doesn't exist on
 this account/server, so that path is dead code, left in only in case it's
-real for a different class/spec ("/ec debug" reports foundEchoesTab).
+real for a different class/spec ("/eco debug" reports foundEchoesTab).
 
 Refreshed: every time you switch to the Checklist tab (always immediate),
 and live while the window is open -- listening for SPELLS_CHANGED,
@@ -122,15 +122,15 @@ The Journal's left-hand "my Echoes" panel is the actual owned list.
 
 DEBUG / SEARCH COMMANDS
 -------------------------
-"/ec debug" dumps a full diagnostic snapshot into EchoCodexDB.lastDebug --
+"/eco debug" dumps a full diagnostic snapshot into EchoCodexDB.lastDebug --
 which data sources exist, how many entries each has, and how many Echoes
 ended up marked known overall.
 
-"/ec debug <search term>" does all of the above plus a case-insensitive
+"/eco debug <search term>" does all of the above plus a case-insensitive
 search for that term across every source (our own data, PerkDatabase,
 granted/locked perks, cachedPerkCounts) and reports exactly where -- or
 whether -- it turns up. Use this to check one specific Echo/Tome by name
-when something looks wrong, e.g. "/ec debug Accelerated Decay".
+when something looks wrong, e.g. "/eco debug Accelerated Decay".
 
 Either way: WoW only writes SavedVariables to disk on /reload or logout, so
 the flow is always: run the command, /reload, then read
@@ -140,7 +140,7 @@ read there than to copy out of the in-game chat log.
 This is best-effort: none of this is a published API, just what
 EbonholdHub's own code does and what testing against a real account
 confirmed. If a server patch changes these tables' shape, detection can
-silently miss things rather than error -- rerun "/ec debug" if Known tags
+silently miss things rather than error -- rerun "/eco debug" if Known tags
 stop looking right. Manual ticking always still works as a fallback.
 
 DATA / ACCURACY

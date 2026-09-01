@@ -500,10 +500,11 @@ local function ScanForOwnership(t, seen)
   end
 end
 
--- "Current build" -- what's actively equipped THIS run, per GetGrantedPerks
--- specifically -- distinct from ownedIds above, which also folds in
--- GetDiscoveredEchoes (everything ever unlocked, any run). The Current
--- Build tab diffs this narrower set against the wishlist.
+-- "Current build" -- what's actively equipped THIS run, per GetGrantedPerks,
+-- UNION'd with whatever EbonholdHub's active Build has selected (see
+-- ScanEbonholdHubActiveBuild below) -- distinct from ownedIds above, which
+-- also folds in GetDiscoveredEchoes (everything ever unlocked, any run).
+-- The Current Build tab diffs this narrower set against the wishlist.
 local currentBuildIds = {}
 
 local function ScanForCurrentBuild(t, seen)
@@ -513,6 +514,53 @@ local function ScanForCurrentBuild(t, seen)
     if type(k) == "number" and k >= 200000 and k < 300000 then currentBuildIds[k] = true end
     if type(v) == "number" and v >= 200000 and v < 300000 then currentBuildIds[v] = true end
     if type(v) == "table" then ScanForCurrentBuild(v, seen) end
+  end
+end
+
+-- Name -> id index over our own static Echo data (built once and cached --
+-- the snapshot doesn't change at runtime), used to resolve EbonholdHub's
+-- Build.echoTiers (keyed by Echo NAME, not spell id) below.
+local echoIdByName
+
+local function EchoIdByName(name)
+  if not echoIdByName then
+    echoIdByName = {}
+    for id, e in pairs(EchoCodexDataEchoes) do
+      local norm = NormalizeOwnedName(e.n)
+      if norm then echoIdByName[norm] = id end
+    end
+  end
+  local norm = NormalizeOwnedName(name)
+  return norm and echoIdByName[norm]
+end
+
+-- EbonholdHub's "Build" feature (Talents/Gear/Echoes/Automation presets, see
+-- its BuildTabs/BuildList UI) is a separate concept from the live in-game
+-- state above -- switching the active Build there doesn't fire
+-- SPELLS_CHANGED at all, since nothing about the character actually
+-- changes. It's exactly what players mean by "switch builds" day to day
+-- though, so it feeds the same currentBuildIds set GetGrantedPerks does.
+local function ScanEbonholdHubActiveBuild()
+  if not (EbonholdHub and EbonholdHub.Build and EbonholdHub.Build.GetActive) then return end
+  local ok, build = pcall(EbonholdHub.Build.GetActive)
+  if not ok or type(build) ~= "table" then return end
+
+  if type(build.echoTiers) == "table" then
+    for name in pairs(build.echoTiers) do
+      local id = EchoIdByName(name)
+      if id then currentBuildIds[id] = true end
+    end
+  end
+
+  -- Permanent/Tome-locked slots are a SEPARATE array on the build, keyed by
+  -- slot index rather than folded into echoTiers -- and already spell ids
+  -- (see EbonholdHub's CharacterEchoes.lua CollectLockedSlots), not names.
+  if type(build.lockedEchoes) == "table" then
+    for _, spellId in pairs(build.lockedEchoes) do
+      if type(spellId) == "number" and EchoCodexDataEchoes[spellId] then
+        currentBuildIds[spellId] = true
+      end
+    end
   end
 end
 
@@ -1008,6 +1056,26 @@ local function ScanDiscoveredEchoes(service)
   end
 end
 
+-- Same lever/group problem as ScanDiscoveredEchoes above, but for the
+-- current-build signal: GetGrantedPerks can report a sibling quality
+-- tier's spellId for an Echo whose only entry in our own snapshot is a
+-- DIFFERENT tier (e.g. Armor Mastery only has an Epic-tier row here) --
+-- expand every currentBuildIds entry across its PerkDatabase group so the
+-- Echo still reads as "in build" regardless of which tier is equipped.
+local function ExpandCurrentBuildGroups()
+  local byId, byGroup = BuildGroupIndex()
+  local seedIds = {}
+  for spellId in pairs(currentBuildIds) do seedIds[spellId] = true end
+  for spellId in pairs(seedIds) do
+    local groupId = byId[spellId]
+    if groupId and byGroup[groupId] then
+      for _, sibling in ipairs(byGroup[groupId]) do
+        if EchoCodexDataEchoes[sibling] then currentBuildIds[sibling] = true end
+      end
+    end
+  end
+end
+
 function EC.RefreshOwnedCache()
   ownedIds, ownedNames = {}, {}
   currentBuildIds = {}
@@ -1018,6 +1086,11 @@ function EC.RefreshOwnedCache()
   -- dependency) -- hasn't fired on the one account this was verified
   -- against, but costs nothing to leave in for other classes/specs.
   ScanSpellbookTomes()
+
+  -- Independent of ProjectEbonhold being loaded -- EbonholdHub's Build
+  -- database is its own SavedVariable, so this still works even in a
+  -- session where the server's own Echo Journal hasn't initialized yet.
+  ScanEbonholdHubActiveBuild()
 
   if not ProjectEbonhold then return end
 
@@ -1045,7 +1118,14 @@ function EC.RefreshOwnedCache()
     end
     if service.GetLockedPerks then
       local ok, locked = pcall(service.GetLockedPerks)
-      if ok then ScanForOwnership(locked, {}) end
+      if ok then
+        ScanForOwnership(locked, {})
+        -- Permanent/Tome-locked Echoes (e.g. Armor Mastery) live here, not
+        -- in GetGrantedPerks -- EbonholdHub's own CharacterEchoes.lua reads
+        -- its locked build slots from this exact same API for this exact
+        -- same reason. Current Build needs both to be complete.
+        ScanForCurrentBuild(locked, {})
+      end
     end
   end
 
@@ -1053,6 +1133,7 @@ function EC.RefreshOwnedCache()
     ScanForOwnership(ProjectEbonhold.Perks.grantedPerks, {})
     ScanForOwnership(ProjectEbonhold.Perks.lockedPerks, {})
     ScanForCurrentBuild(ProjectEbonhold.Perks.grantedPerks, {})
+    ScanForCurrentBuild(ProjectEbonhold.Perks.lockedPerks, {})
   end
 
   if ProjectEbonholdDB and type(ProjectEbonholdDB.cachedPerkCounts) == "table" then
@@ -1063,6 +1144,8 @@ function EC.RefreshOwnedCache()
       end
     end
   end
+
+  ExpandCurrentBuildGroups()
 end
 
 function EC.HasOwnershipData()
@@ -2187,14 +2270,27 @@ function EC.RefreshCurrentBuild()
   end
 
   -- Reverse direction: currently equipped, but never made the wishlist.
+  -- Collapse by NAME here, not id: ExpandCurrentBuildGroups (see its own
+  -- comment) deliberately marks every quality-tier sibling of an equipped
+  -- Echo as "in build" too, so a single equipped Echo would otherwise
+  -- produce one reroll-candidate row per lower tier of that same Echo you
+  -- don't actually have. Keep only the highest-quality row per name.
+  local rerollByName = {}
   for echoId in pairs(currentBuildIds) do
     if not seen[echoId] then
       local echo = EchoCodexDataEchoes[echoId]
       if echo then
         echo.id = echoId
-        entries[#entries + 1] = { echo = echo, status = "reroll" }
+        local norm = NormalizeOwnedName(echo.n) or tostring(echoId)
+        local existing = rerollByName[norm]
+        if not existing or echo.q > existing.q then
+          rerollByName[norm] = echo
+        end
       end
     end
+  end
+  for _, echo in pairs(rerollByName) do
+    entries[#entries + 1] = { echo = echo, status = "reroll" }
   end
 
   table.sort(entries, function(a, b)
@@ -2241,7 +2337,7 @@ local function BuildCurrentBuildTab(parent)
   hint:SetWidth(FRAME_WIDTH - 60)
   hint:SetJustifyH("LEFT")
   hint:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
-  hint:SetText("Your current run's active Echoes vs. this wishlist: what you have, what you're still missing, and what's equipped but not wishlisted -- safe to reroll away.")
+  hint:SetText("Your current build (live picks, or EbonholdHub's active Build) vs. this wishlist: what you have, what you're still missing, and what's in the build but not wishlisted -- safe to reroll away.")
 
   currentBuildProgressFS = f:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
   currentBuildProgressFS:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -10)
@@ -2435,12 +2531,23 @@ local function TryHookEchoJournal()
   end
 end
 
+local hookedEbonholdHubBuild = false
+
+local function TryHookEbonholdHubBuild()
+  if hookedEbonholdHubBuild then return end
+  if EbonholdHub and EbonholdHub.Build and EbonholdHub.Build.OnActiveChanged then
+    EbonholdHub.Build.OnActiveChanged(function() MarkOwnershipDirty() end)
+    hookedEbonholdHubBuild = true
+  end
+end
+
 local ownershipEvents = CreateFrame("Frame")
 ownershipEvents:RegisterEvent("SPELLS_CHANGED")
 ownershipEvents:RegisterEvent("LEARNED_SPELL_IN_TAB")
 ownershipEvents:RegisterEvent("PLAYER_ENTERING_WORLD")
 ownershipEvents:SetScript("OnEvent", function(self, event)
   TryHookEchoJournal() -- ProjectEbonhold may not have existed yet at ADDON_LOADED
+  TryHookEbonholdHubBuild() -- ditto for EbonholdHub
   MarkOwnershipDirty()
 end)
 
@@ -2450,17 +2557,39 @@ end)
 
 local loader = CreateFrame("Frame")
 loader:RegisterEvent("ADDON_LOADED")
+loader:RegisterEvent("PLAYER_LOGIN")
 loader:SetScript("OnEvent", function(self, event, name)
-  if name ~= ADDON_NAME then return end
-  InitDB()
-  BuildMainFrame()
-  TryHookEchoJournal()
-  self:UnregisterEvent("ADDON_LOADED")
-  DEFAULT_CHAT_FRAME:AddMessage("|cffffd100Echo Codex|r loaded. Type |cff71d5ff/ec|r to open it.")
+  if event == "ADDON_LOADED" then
+    if name ~= ADDON_NAME then return end
+    InitDB()
+    BuildMainFrame()
+    TryHookEchoJournal()
+    TryHookEbonholdHubBuild()
+    self:UnregisterEvent("ADDON_LOADED")
+    return
+  end
+
+  if event == "PLAYER_LOGIN" then
+    self:UnregisterEvent("PLAYER_LOGIN")
+
+    -- /echocodex is specific enough to claim unconditionally. /eco is short
+    -- and more likely to be used by another addon, so only claim it if no
+    -- other addon has already bound it by this point (all addons have
+    -- finished registering their SLASH_ commands by PLAYER_LOGIN) -- we
+    -- don't want to steal a command another addon is already using.
+    local shortCmd = "eco"
+    local takenBy = hash_SlashCmdList and hash_SlashCmdList["/" .. shortCmd:upper()]
+    local shortHint = "/echocodex"
+    if not takenBy or takenBy == "ECHOCODEX" then
+      SLASH_ECHOCODEX2 = "/" .. shortCmd
+      shortHint = "/" .. shortCmd
+    end
+
+    DEFAULT_CHAT_FRAME:AddMessage("|cffffd100Echo Codex|r loaded. Type |cff71d5ff" .. shortHint .. "|r to open it.")
+  end
 end)
 
 SLASH_ECHOCODEX1 = "/echocodex"
-SLASH_ECHOCODEX2 = "/ec"
 SlashCmdList["ECHOCODEX"] = function(msg)
   msg = strtrim(msg or "")
   if msg == "debug" then
