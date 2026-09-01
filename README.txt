@@ -19,6 +19,11 @@ USE
 ---
 /eco  or  /echocodex   opens the window (same command closes it, ESC also works)
 
+/eco cleanup  (or "/eco prune") -- drops every wishlist item that's learned
+automatically while leveling (no Tome to farm for those, so there's nothing
+for the Missing Tomes list to track). Command-only, no button for it in the
+window.
+
 Browse tab
   - Type in the search box to match against BOTH the Echo name and its full
     effect description (e.g. search "movement speed" or "execute").
@@ -30,7 +35,7 @@ Wishlist tab
     its own separate set of wishlists (a Warlock alt and a Priest alt never
     share one) -- switch between them with the "Wishlist:" dropdown at the
     top, or make more with "New" (Rename/Delete are there too). Everything
-    below -- items, the Checklist and its found-Tome checkmarks -- belongs
+    below -- items, the Missing Tomes list and its found-Tome checkmarks -- belongs
     to whichever wishlist is currently selected.
   - Everything you've added. Remove anything you change your mind on.
   - Import from Echo Journal / EbonholdHub / Nexus: paste an export string
@@ -62,15 +67,12 @@ Wishlist tab
     box by EbonholdHub's own cross-addon hook, which scans other addons'
     windows for anything holding EWL/EBH-formatted text; the window is now
     named so that scanner skips it.
-  - "Remove non-Tome" button: drops every wishlist item that's learned
-    automatically while leveling (no Tome to farm for those, so there's
-    nothing for the Checklist to track). Same as typing "/eco cleanup".
   - "Export" button: the reverse of Import -- produces an EBH1 string for
     the current wishlist (already selected in the popup, Ctrl+A/Ctrl+C to
     copy) that pastes straight into Nexus's own Import dialog, EbonholdHub,
     or the Echo Journal.
 
-Checklist tab
+Missing Tomes tab
   - Auto-populates from your wishlist: just the Echoes that require learning
     a Tome. Tick the box yourself for anything auto-detection misses -- it's
     saved between sessions either way.
@@ -103,7 +105,7 @@ assumption that's where learned Tomes show up; that tab doesn't exist on
 this account/server, so that path is dead code, left in only in case it's
 real for a different class/spec ("/eco debug" reports foundEchoesTab).
 
-Refreshed: every time you switch to the Checklist tab (always immediate),
+Refreshed: every time you switch to the Missing Tomes tab (always immediate),
 and live while the window is open -- listening for SPELLS_CHANGED,
 LEARNED_SPELL_IN_TAB, and the Echo Journal's own OnDataChanged callback
 (hooked the same way EbonholdHub hooks it), debounced to one refresh per
@@ -111,8 +113,8 @@ LEARNED_SPELL_IN_TAB, and the Echo Journal's own OnDataChanged callback
 changelog describes hitting from handling SPELLS_CHANGED naively.
 
 Browse and Wishlist rows get a green "Known" tag for Echoes you already
-have, in any quality. Checklist entries for Echoes you already know get
-auto-ticked (and auto-cleared off the list -- see the Checklist tab notes
+have, in any quality. Missing Tomes entries for Echoes you already know get
+auto-ticked (and auto-cleared off the list -- see the Missing Tomes tab notes
 above).
 
 Note: the game's own Echo Journal browser highlights Echoes you've
@@ -160,7 +162,7 @@ This is an unofficial, fan-made tool. Not affiliated with Project Ebonhold.
 
 SAVED DATA
 ----------
-Everything -- wishlists, Checklist/found-Tome state, and the window
+Everything -- wishlists, Missing Tomes/found-Tome state, and the window
 position -- lives in one account-wide file:
 WTF\Account\<ACCOUNT>\SavedVariables\EchoCodex.lua, under EchoCodexDB.
 

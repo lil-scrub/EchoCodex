@@ -2037,6 +2037,7 @@ local function BuildWishlistTab(parent)
   wishlistCountFS:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
 
   local exportBtn = CreateFlatButton(f, "EchoCodexExportBtn", 70, 20, "Export")
+  exportBtn:SetPoint("TOPRIGHT", importStatusFS, "BOTTOMRIGHT", -6, -12)
   exportBtn:HookScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     GameTooltip:SetText("Export this wishlist", 1, 0.82, 0)
@@ -2051,24 +2052,6 @@ local function BuildWishlistTab(parent)
       return
     end
     StaticPopup_Show("ECHOCODEX_EXPORT_WISHLIST", charDB.activeWishlist)
-  end)
-
-  local pruneBtn = CreateFlatButton(f, "EchoCodexPruneBtn", 140, 20, "Remove non-Tome")
-  pruneBtn:SetPoint("TOPRIGHT", importStatusFS, "BOTTOMRIGHT", -6, -12)
-  exportBtn:SetPoint("RIGHT", pruneBtn, "LEFT", -6, 0)
-  pruneBtn:HookScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_TOP")
-    GameTooltip:SetText("Remove non-Tome Echoes", 1, 0.82, 0)
-    GameTooltip:AddLine("Drops every wishlist item that's learned automatically while leveling, since there's no Tome to track down for those.", 1, 1, 1, true)
-    GameTooltip:Show()
-  end)
-  pruneBtn:HookScript("OnLeave", function() GameTooltip:Hide() end)
-  pruneBtn:HookScript("OnClick", function()
-    local result = EC.PruneNonTomeWishlist()
-    local msg = string.format("Removed %d non-Tome item%s (%d Tome-locked item%s kept)",
-      result.removed, result.removed == 1 and "" or "s",
-      result.keptTome, result.keptTome == 1 and "" or "s")
-    DEFAULT_CHAT_FRAME:AddMessage("|cffffd100[Echo Codex]|r " .. msg .. ".")
   end)
 
   wishlistList = CreateList(f, FRAME_WIDTH - 40, FRAME_HEIGHT - 285, WishlistRowFactory)
@@ -2521,7 +2504,7 @@ local function BuildMainFrame()
   tabSep:SetHeight(1)
 
   local names = { "browse", "wishlist", "checklist", "currentbuild" }
-  local labels = { browse = "Browse", wishlist = "Wishlist", checklist = "Checklist", currentbuild = "Current Build" }
+  local labels = { browse = "Browse", wishlist = "Wishlist", checklist = "Missing Tomes", currentbuild = "Current Build" }
   local prevTab
   for i, n in ipairs(names) do
     local btn = BuildTabButton(tabHolder, "EchoCodexTabButton" .. i, labels[n])
