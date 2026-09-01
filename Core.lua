@@ -540,6 +540,14 @@ end
 -- SPELLS_CHANGED at all, since nothing about the character actually
 -- changes. It's exactly what players mean by "switch builds" day to day
 -- though, so it feeds the same currentBuildIds set GetGrantedPerks does.
+--
+-- A saved Build is just a plan, though -- it can reference Echoes the
+-- character hasn't actually unlocked yet (planning ahead, a build copied
+-- from someone else, etc). Only fold in entries the player actually owns
+-- (per EC.IsEchoKnown, the same ownedIds/ownedNames used everywhere else),
+-- so switching to an aspirational Build doesn't falsely mark unowned Echoes
+-- as "in build" / safe-to-reroll on the Current Build tab. This means the
+-- call site matters: run this AFTER ownedIds/ownedNames are populated.
 local function ScanEbonholdHubActiveBuild()
   if not (EbonholdHub and EbonholdHub.Build and EbonholdHub.Build.GetActive) then return end
   local ok, build = pcall(EbonholdHub.Build.GetActive)
@@ -548,7 +556,8 @@ local function ScanEbonholdHubActiveBuild()
   if type(build.echoTiers) == "table" then
     for name in pairs(build.echoTiers) do
       local id = EchoIdByName(name)
-      if id then currentBuildIds[id] = true end
+      local echo = id and EchoCodexDataEchoes[id]
+      if echo and EC.IsEchoKnown(echo) then currentBuildIds[id] = true end
     end
   end
 
@@ -557,9 +566,8 @@ local function ScanEbonholdHubActiveBuild()
   -- (see EbonholdHub's CharacterEchoes.lua CollectLockedSlots), not names.
   if type(build.lockedEchoes) == "table" then
     for _, spellId in pairs(build.lockedEchoes) do
-      if type(spellId) == "number" and EchoCodexDataEchoes[spellId] then
-        currentBuildIds[spellId] = true
-      end
+      local echo = type(spellId) == "number" and EchoCodexDataEchoes[spellId]
+      if echo and EC.IsEchoKnown(echo) then currentBuildIds[spellId] = true end
     end
   end
 end
@@ -1087,12 +1095,13 @@ function EC.RefreshOwnedCache()
   -- against, but costs nothing to leave in for other classes/specs.
   ScanSpellbookTomes()
 
-  -- Independent of ProjectEbonhold being loaded -- EbonholdHub's Build
-  -- database is its own SavedVariable, so this still works even in a
-  -- session where the server's own Echo Journal hasn't initialized yet.
-  ScanEbonholdHubActiveBuild()
-
-  if not ProjectEbonhold then return end
+  if not ProjectEbonhold then
+    -- No PerkService to pull ownership from, but ScanSpellbookTomes above
+    -- may still have populated ownedIds -- run the EbonholdHub Build check
+    -- against whatever we've got rather than skipping it outright.
+    ScanEbonholdHubActiveBuild()
+    return
+  end
 
   local ok1, service = pcall(function() return ProjectEbonhold.PerkService end)
   service = ok1 and service or nil
@@ -1144,6 +1153,11 @@ function EC.RefreshOwnedCache()
       end
     end
   end
+
+  -- Run last: ScanEbonholdHubActiveBuild checks each Build entry against
+  -- ownedIds/ownedNames, so it needs every ownership signal above to have
+  -- already landed.
+  ScanEbonholdHubActiveBuild()
 
   ExpandCurrentBuildGroups()
 end
