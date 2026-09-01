@@ -2,7 +2,7 @@
 ## Title: Echo Codex
 ## Notes: Search Project Ebonhold's Echoes, build a wishlist, and track down where to farm each Echo's Tome.
 ## Author: Echo Codex
-## Version: 1.2.0
+## Version: 1.3.0
 ## SavedVariables: EchoCodexDB
 
 # Load order matters: Init.lua creates the shared `ns` namespace every
