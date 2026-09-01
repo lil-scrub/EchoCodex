@@ -2173,11 +2173,8 @@ local function ChecklistRowFactory(parent, i)
   row.bg:SetAllPoints()
   row.bg:SetTexture(1, 1, 1, (i % 2 == 0) and 0.04 or 0.0)
 
-  row.checkBtn = CreateFlatCheckbox(row, "EchoCodexCheckRowCB" .. i, nil)
-  row.checkBtn:SetPoint("LEFT", 4, 0)
-
   row.nameText = row:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-  row.nameText:SetPoint("LEFT", row.checkBtn, "RIGHT", 6, 0)
+  row.nameText:SetPoint("LEFT", 6, 0)
   row.nameText:SetJustifyH("LEFT")
   row.nameText:SetWidth(200)
 
@@ -2203,15 +2200,6 @@ end
 local function ChecklistUpdateRow(row, entry)
   row.tomeId = entry.tomeId
   local found = activeWishlistFound[entry.tomeId]
-  row.checkBtn:SetChecked(found and true or false)
-  row.checkBtn.OnValueChanged = function(checked)
-    if checked then
-      activeWishlistFound[entry.tomeId] = true
-    else
-      activeWishlistFound[entry.tomeId] = nil
-    end
-    EC.RefreshChecklist()
-  end
 
   local c = QUALITY_COLORS[entry.echo.q]
   row.nameText:SetText(entry.tome.name)

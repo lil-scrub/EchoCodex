@@ -74,13 +74,14 @@ Wishlist tab
 
 Missing Tomes tab
   - Auto-populates from your wishlist: just the Echoes that require learning
-    a Tome. Tick the box yourself for anything auto-detection misses -- it's
-    saved between sessions either way.
+    a Tome.
   - Auto-clears: once an entry is known (auto-detected, see "Known Echo
-    detection" below, or ticked by hand), it drops off this list by default
-    -- decluttered down to just what you still need. Nothing is deleted:
-    it's still on your wishlist and still counted, just hidden from view.
-    Tick "Show completed" (top right) to bring finished entries back.
+    detection" below), it drops off this list by default -- decluttered
+    down to just what you still need. Nothing is deleted: it's still on
+    your wishlist and still counted, just hidden from view. Tick "Show
+    completed" (top right) to bring finished entries back. There's no
+    manual checkbox -- if auto-detection ever misses one, it'll stay
+    listed rather than silently disappear.
   - Hover a row to see the drop location(s): zone, spot, mobs, and any
     notes. Entries with a Tome we don't have a location for yet are marked
     "Location not documented yet."
@@ -114,8 +115,7 @@ changelog describes hitting from handling SPELLS_CHANGED naively.
 
 Browse and Wishlist rows get a green "Known" tag for Echoes you already
 have, in any quality. Missing Tomes entries for Echoes you already know get
-auto-ticked (and auto-cleared off the list -- see the Missing Tomes tab notes
-above).
+auto-cleared off the list -- see the Missing Tomes tab notes above.
 
 Note: the game's own Echo Journal browser highlights Echoes you've
 tiered/wishlisted there too, in the same visual style as owned ones -- don't
