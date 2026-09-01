@@ -19,7 +19,8 @@ local mock = require("wow_mock")
 local ADDON_DIR = ".."
 local TOC_ORDER = {
   "Data_Echoes.lua", "Data_Tomes.lua",
-  "Init.lua", "Widgets.lua", "DB.lua", "Util.lua", "Core.lua",
+  "Init.lua", "Widgets.lua", "DB.lua", "Util.lua",
+  "Ownership.lua", "Debug.lua", "Core.lua",
 }
 
 ----------------------------------------------------------------------
@@ -221,6 +222,74 @@ test("an Echo not in the build reports count 1 and is not in-build", function()
   ns.EC.RefreshOwnedCache()
   assertFalse(ns.EC.IsEchoInCurrentBuild({ id = SWIFT_STEP_BLUE }), "in build")
   assertEq(ns.EC.GetCurrentBuildCount({ id = SWIFT_STEP_BLUE }), 1, "default count")
+end)
+
+----------------------------------------------------------------------
+-- Tests: cross-file ownership state access
+--
+-- Ownership.lua owns the scan tables and REPLACES them on every refresh, so
+-- Debug.lua and the Current Build tab reach them via ns.GetOwnershipState()
+-- rather than holding a reference. These cover those seams.
+----------------------------------------------------------------------
+
+print("\n-- ownership state accessor --")
+
+test("GetOwnershipState reflects the latest refresh, not a stale snapshot", function()
+  local ns = loadAddonReady()
+  _G.ProjectEbonhold = grantedPerks({
+    ["Quick Hands"] = { stack(QUICK_HANDS_BLUE, 2) },
+  })
+  ns.EC.RefreshOwnedCache()
+  local first = ns.GetOwnershipState()
+  assertTrue(first.currentBuildIds[QUICK_HANDS_BLUE], "first refresh sees the pick")
+
+  _G.ProjectEbonhold = grantedPerks({
+    ["Swift Step"] = { stack(SWIFT_STEP_BLUE, 2) },
+  })
+  ns.EC.RefreshOwnedCache()
+  local second = ns.GetOwnershipState()
+  assertTrue(second.currentBuildIds[SWIFT_STEP_BLUE], "second refresh sees the new pick")
+  assertFalse(second.currentBuildIds[QUICK_HANDS_BLUE], "old pick cleared")
+end)
+
+test("RefreshCurrentBuild lists an equipped, unwishlisted Echo as a reroll", function()
+  local ns = loadAddonReady()
+  _G.ProjectEbonhold = grantedPerks({
+    ["Swift Step"] = { stack(SWIFT_STEP_BLUE, 2) },
+  })
+  ns.EC.RefreshCurrentBuild()  -- must not error; reads via GetOwnershipState
+  assertTrue(ns.EC.IsEchoInCurrentBuild({ id = SWIFT_STEP_BLUE }), "equipped")
+end)
+
+test("DebugOwnership writes a snapshot without erroring", function()
+  local ns = loadAddonReady()
+  _G.ProjectEbonhold = grantedPerks({
+    ["Quick Hands"] = { stack(QUICK_HANDS_BLUE, 2), stack(QUICK_HANDS_BLUE, 2) },
+  })
+  ns.EC.DebugOwnership()
+  local d = _G.EchoCodexDB.lastDebug
+  assertTrue(d, "lastDebug written")
+  assertEq(d.projectEbonholdPresent, true, "sees ProjectEbonhold")
+  assertEq(type(d.totalKnownEchoes), "number", "known count type")
+  assertEq(d.foundEchoesTab, false, "no Echoes spellbook tab in the stub")
+end)
+
+test("DebugOwnership term search reports per-tier ownership", function()
+  local ns = loadAddonReady()
+  _G.ProjectEbonhold = grantedPerks({
+    ["Quick Hands"] = { stack(QUICK_HANDS_BLUE, 2) },
+  })
+  ns.EC.DebugOwnership("Quick Hands")
+  local search = _G.EchoCodexDB.lastDebug.search
+  assertTrue(search, "search section written")
+  assertEq(search.term, "Quick Hands", "term recorded")
+  assertTrue(#search.ownData >= 3, "all three tiers listed")
+  local blueLine
+  for _, line in ipairs(search.ownData) do
+    if line:find("id=" .. QUICK_HANDS_BLUE, 1, true) then blueLine = line end
+  end
+  assertTrue(blueLine, "blue tier line present")
+  assertTrue(blueLine:find("inCurrentBuild=true", 1, true), "blue reported in build: " .. blueLine)
 end)
 
 ----------------------------------------------------------------------
