@@ -143,7 +143,43 @@ This is best-effort: none of this is a published API, just what
 EbonholdHub's own code does and what testing against a real account
 confirmed. If a server patch changes these tables' shape, detection can
 silently miss things rather than error -- rerun "/eco debug" if Known tags
-stop looking right. Manual ticking always still works as a fallback.
+stop looking right.
+
+SOURCE LAYOUT
+--------------
+Load order is set in EchoCodex.toc; Init.lua must come first because it
+creates the shared namespace (`ns`) the other files read from, using WoW's
+own private per-addon table -- nothing is added to _G.
+
+  Data_Echoes.lua  Data_Tomes.lua   static snapshots (auto-generated)
+  Init.lua      namespace, constants, theme
+  Widgets.lua   flat button / checkbox / scrolling list primitives
+  DB.lua        saved variables
+  Util.lua      filtering, formatting, tooltips
+  Core.lua      ownership detection, the four tabs, main frame
+
+Convention: values assigned once (constants, functions) are re-localized at
+the top of each file that uses them. Values REASSIGNED at runtime --
+ns.charDB and the two active-wishlist pointers, which are swapped whenever
+the active wishlist changes -- must always be read through `ns.` at the
+point of use, or a file-local copy goes stale on the next switch.
+
+TESTS
+-----
+  ./tests/run.sh
+
+Runs under Lua 5.1 (the version the 3.3.5 client ships, so a construct that
+passes here parses in-game) against a stubbed WoW API in tests/wow_mock.lua.
+Syntax-checks every file, then exercises ownership/tier detection, wishlist
+CRUD, EBH import/export round-trips, filtering, and data integrity.
+
+The ownership fixtures are real captures from "/eco debug" read back out of
+SavedVariables, including the two quirks that caused actual bugs: an Echo
+reporting the same spellId across two stacks, and one reporting two
+DIFFERENT quality tiers across stacks that are the same tier in-game. Those
+cases are pinned by tests specifically, and the tests were verified to fail
+when the fixes are reverted -- a test that cannot fail is not protecting
+anything.
 
 DATA / ACCURACY
 ----------------
