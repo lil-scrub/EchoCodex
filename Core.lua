@@ -507,19 +507,61 @@ end
 -- The Current Build tab diffs this narrower set against the wishlist.
 local currentBuildIds = {}
 
-local function ScanForCurrentBuild(t, seen)
-  if type(t) ~= "table" or seen[t] then return end
-  seen[t] = true
-  for k, v in pairs(t) do
-    if type(k) == "number" and k >= 200000 and k < 300000 then currentBuildIds[k] = true end
-    if type(v) == "number" and v >= 200000 and v < 300000 then currentBuildIds[v] = true end
-    if type(v) == "table" then ScanForCurrentBuild(v, seen) end
+-- Collect every spellId (200000-299999) nested anywhere under `entry`.
+local function CollectSpellIds(entry, seen, out)
+  if type(entry) ~= "table" or seen[entry] then return end
+  seen[entry] = true
+  for k, v in pairs(entry) do
+    if type(k) == "number" and k >= 200000 and k < 300000 then out[k] = true end
+    if type(v) == "number" and v >= 200000 and v < 300000 then out[v] = true end
+    if type(v) == "table" then CollectSpellIds(v, seen, out) end
+  end
+end
+
+-- `t` is granted/locked perks, keyed by Echo name (or by slot index for
+-- locked) -> one entry per stack the player holds of that perk (see
+-- "stack"/"maxStack" fields). GetGrantedPerks can report DIFFERENT
+-- quality-tier spellIds across a single Echo's stacks even when the
+-- character only actually has ONE tier right now (confirmed live: two
+-- Swift Step stacks, both blue in-game, reported as one blue + one green
+-- spellId) -- so within one entry, trust only the highest tier found among
+-- rows we track, not every distinct id GetGrantedPerks happened to report.
+local function ScanForCurrentBuild(t)
+  if type(t) ~= "table" then return end
+  for _, entry in pairs(t) do
+    if type(entry) == "table" then
+      local foundIds = {}
+      CollectSpellIds(entry, {}, foundIds)
+
+      local bestId, bestQ
+      for id in pairs(foundIds) do
+        local echo = EchoCodexDataEchoes[id]
+        if echo and (not bestQ or echo.q > bestQ) then bestId, bestQ = id, echo.q end
+      end
+
+      if bestId then
+        currentBuildIds[bestId] = true
+      else
+        -- Nothing found matches one of our own rows (e.g. only a sibling
+        -- tier we don't track) -- seed the raw ids so ExpandCurrentBuildGroups
+        -- can still resolve a tracked sibling via PerkDatabase's groupId.
+        for id in pairs(foundIds) do currentBuildIds[id] = true end
+      end
+    end
   end
 end
 
 -- Name -> id index over our own static Echo data (built once and cached --
 -- the snapshot doesn't change at runtime), used to resolve EbonholdHub's
--- Build.echoTiers (keyed by Echo NAME, not spell id) below.
+-- Build.echoTiers (keyed by Echo NAME, not spell id) below. Several Echoes
+-- have one row PER QUALITY TIER sharing the exact same name (e.g. "Quick
+-- Hands" is white/green/blue rows 200431/200482/200523) -- and Build's
+-- "tier" value is an unrelated internal S/A/B/C weighting grade, not the
+-- WoW quality, so it can't tell us which row the player actually has.
+-- Deterministically keep the HIGHEST-quality row per name (pairs() order is
+-- otherwise unspecified, so without this a name could resolve to any tier
+-- from run to run) -- same convention EC.RefreshCurrentBuild's rerollByName
+-- dedup already uses when multiple tiers of one name are in play.
 local echoIdByName
 
 local function EchoIdByName(name)
@@ -527,7 +569,12 @@ local function EchoIdByName(name)
     echoIdByName = {}
     for id, e in pairs(EchoCodexDataEchoes) do
       local norm = NormalizeOwnedName(e.n)
-      if norm then echoIdByName[norm] = id end
+      if norm then
+        local existing = echoIdByName[norm]
+        if not existing or e.q > EchoCodexDataEchoes[existing].q then
+          echoIdByName[norm] = id
+        end
+      end
     end
   end
   local norm = NormalizeOwnedName(name)
@@ -543,11 +590,15 @@ end
 --
 -- A saved Build is just a plan, though -- it can reference Echoes the
 -- character hasn't actually unlocked yet (planning ahead, a build copied
--- from someone else, etc). Only fold in entries the player actually owns
--- (per EC.IsEchoKnown, the same ownedIds/ownedNames used everywhere else),
--- so switching to an aspirational Build doesn't falsely mark unowned Echoes
--- as "in build" / safe-to-reroll on the Current Build tab. This means the
--- call site matters: run this AFTER ownedIds/ownedNames are populated.
+-- from someone else, etc). Only fold in entries backed by EXACT-id evidence
+-- in ownedIds (real spellIds seen in granted/locked perks or discovery) --
+-- deliberately NOT EC.IsEchoKnown/ownedNames, whose name-only fallback (fed
+-- by ProjectEbonholdDB.cachedPerkCounts, keyed by Echo name with no tier)
+-- reports every quality tier of a name as "known" the moment ANY tier is.
+-- Gating on that would rubber-stamp a stale Build entry for the WRONG tier
+-- (e.g. a green Quick Hands the Build remembers, when only blue is
+-- currently granted) as long as some tier of that name was ever known.
+-- This means the call site matters: run this AFTER ownedIds is populated.
 local function ScanEbonholdHubActiveBuild()
   if not (EbonholdHub and EbonholdHub.Build and EbonholdHub.Build.GetActive) then return end
   local ok, build = pcall(EbonholdHub.Build.GetActive)
@@ -556,8 +607,7 @@ local function ScanEbonholdHubActiveBuild()
   if type(build.echoTiers) == "table" then
     for name in pairs(build.echoTiers) do
       local id = EchoIdByName(name)
-      local echo = id and EchoCodexDataEchoes[id]
-      if echo and EC.IsEchoKnown(echo) then currentBuildIds[id] = true end
+      if id and ownedIds[id] then currentBuildIds[id] = true end
     end
   end
 
@@ -566,8 +616,9 @@ local function ScanEbonholdHubActiveBuild()
   -- (see EbonholdHub's CharacterEchoes.lua CollectLockedSlots), not names.
   if type(build.lockedEchoes) == "table" then
     for _, spellId in pairs(build.lockedEchoes) do
-      local echo = type(spellId) == "number" and EchoCodexDataEchoes[spellId]
-      if echo and EC.IsEchoKnown(echo) then currentBuildIds[spellId] = true end
+      if type(spellId) == "number" and EchoCodexDataEchoes[spellId] and ownedIds[spellId] then
+        currentBuildIds[spellId] = true
+      end
     end
   end
 end
@@ -725,6 +776,22 @@ local function CountKeys(t)
   return n
 end
 
+-- Like tostring(), but for tables it inlines a couple levels of shallow
+-- contents ("{200482=true}") instead of just a key count -- the debug
+-- search below needs to see what's actually INSIDE a per-name entry (e.g.
+-- which spellId a granted-perk table keyed by Echo name actually holds),
+-- not just that it has 1 key.
+local function DescribeValue(v, depth)
+  if type(v) ~= "table" then return tostring(v) end
+  if depth <= 0 then return "table(" .. tostring(CountKeys(v)) .. " keys)" end
+  local parts = {}
+  for k, vv in pairs(v) do
+    parts[#parts + 1] = tostring(k) .. "=" .. DescribeValue(vv, depth - 1)
+    if #parts >= 8 then parts[#parts + 1] = "..."; break end
+  end
+  return "{" .. table.concat(parts, ", ") .. "}"
+end
+
 -- Flat "key=value" strings for up to `limit` entries of a table -- enough to
 -- see its shape (is it keyed by name or by id? nested tables or plain?)
 -- without dumping something unbounded into SavedVariables.
@@ -732,13 +799,7 @@ local function SampleKeys(t, limit)
   if type(t) ~= "table" then return nil end
   local out = {}
   for k, v in pairs(t) do
-    local vDesc
-    if type(v) == "table" then
-      vDesc = "table(" .. tostring(CountKeys(v)) .. " keys)"
-    else
-      vDesc = tostring(v)
-    end
-    out[#out + 1] = tostring(k) .. "=" .. vDesc
+    out[#out + 1] = tostring(k) .. "=" .. DescribeValue(v, 2)
     if #out >= (limit or 8) then break end
   end
   return out
@@ -774,8 +835,9 @@ local function SearchOwnershipSources(term)
     if string.find(string.lower(e.n), lowerTerm, 1, true) then
       results.ownData = results.ownData or {}
       results.ownData[#results.ownData + 1] = string.format(
-        "id=%d name=%s tome=%s knownByUs=%s",
-        id, e.n, tostring(EchoCodexEchoToTome[id]), tostring(EC.IsEchoKnown(e)))
+        "id=%d name=%s tome=%s knownByUs=%s exactIdOwned=%s inCurrentBuild=%s",
+        id, e.n, tostring(EchoCodexEchoToTome[id]), tostring(EC.IsEchoKnown(e)),
+        tostring(ownedIds[id] == true), tostring(currentBuildIds[id] == true))
     end
   end
 
@@ -864,8 +926,7 @@ local function SearchOwnershipSources(term)
     for k, v in pairs(t) do
       if type(k) == "string" and string.find(string.lower(k), lowerTerm, 1, true) then
         results[label] = results[label] or {}
-        local vDesc = type(v) == "table" and ("table(" .. tostring(CountKeys(v)) .. " keys)") or tostring(v)
-        results[label][#results[label] + 1] = tostring(k) .. "=" .. vDesc
+        results[label][#results[label] + 1] = tostring(k) .. "=" .. DescribeValue(v, 2)
       end
     end
   end
@@ -1068,17 +1129,27 @@ end
 -- current-build signal: GetGrantedPerks can report a sibling quality
 -- tier's spellId for an Echo whose only entry in our own snapshot is a
 -- DIFFERENT tier (e.g. Armor Mastery only has an Epic-tier row here) --
--- expand every currentBuildIds entry across its PerkDatabase group so the
--- Echo still reads as "in build" regardless of which tier is equipped.
+-- fall back to its PerkDatabase group so the Echo still reads as "in
+-- build" even when the reported id doesn't match any row we track.
+--
+-- Only fall back when the reported spellId ISN'T already one of our own
+-- rows: Echoes like "Quick Hands" have one row PER QUALITY TIER
+-- (white/green/blue), all in the same group -- expanding unconditionally
+-- would mark every tier "in build" just because one of them is, which is
+-- wrong (equipping blue doesn't mean you also currently have green). When
+-- the reported id IS already a row we track, trust it exactly as reported
+-- instead of fanning out to its siblings.
 local function ExpandCurrentBuildGroups()
   local byId, byGroup = BuildGroupIndex()
   local seedIds = {}
   for spellId in pairs(currentBuildIds) do seedIds[spellId] = true end
   for spellId in pairs(seedIds) do
-    local groupId = byId[spellId]
-    if groupId and byGroup[groupId] then
-      for _, sibling in ipairs(byGroup[groupId]) do
-        if EchoCodexDataEchoes[sibling] then currentBuildIds[sibling] = true end
+    if not EchoCodexDataEchoes[spellId] then
+      local groupId = byId[spellId]
+      if groupId and byGroup[groupId] then
+        for _, sibling in ipairs(byGroup[groupId]) do
+          if EchoCodexDataEchoes[sibling] then currentBuildIds[sibling] = true end
+        end
       end
     end
   end
@@ -1122,7 +1193,7 @@ function EC.RefreshOwnedCache()
       local ok, granted = pcall(service.GetGrantedPerks)
       if ok then
         ScanForOwnership(granted, {})
-        ScanForCurrentBuild(granted, {})
+        ScanForCurrentBuild(granted)
       end
     end
     if service.GetLockedPerks then
@@ -1133,7 +1204,7 @@ function EC.RefreshOwnedCache()
         -- in GetGrantedPerks -- EbonholdHub's own CharacterEchoes.lua reads
         -- its locked build slots from this exact same API for this exact
         -- same reason. Current Build needs both to be complete.
-        ScanForCurrentBuild(locked, {})
+        ScanForCurrentBuild(locked)
       end
     end
   end
@@ -1141,8 +1212,8 @@ function EC.RefreshOwnedCache()
   if ProjectEbonhold.Perks then
     ScanForOwnership(ProjectEbonhold.Perks.grantedPerks, {})
     ScanForOwnership(ProjectEbonhold.Perks.lockedPerks, {})
-    ScanForCurrentBuild(ProjectEbonhold.Perks.grantedPerks, {})
-    ScanForCurrentBuild(ProjectEbonhold.Perks.lockedPerks, {})
+    ScanForCurrentBuild(ProjectEbonhold.Perks.grantedPerks)
+    ScanForCurrentBuild(ProjectEbonhold.Perks.lockedPerks)
   end
 
   if ProjectEbonholdDB and type(ProjectEbonholdDB.cachedPerkCounts) == "table" then
@@ -2284,27 +2355,19 @@ function EC.RefreshCurrentBuild()
   end
 
   -- Reverse direction: currently equipped, but never made the wishlist.
-  -- Collapse by NAME here, not id: ExpandCurrentBuildGroups (see its own
-  -- comment) deliberately marks every quality-tier sibling of an equipped
-  -- Echo as "in build" too, so a single equipped Echo would otherwise
-  -- produce one reroll-candidate row per lower tier of that same Echo you
-  -- don't actually have. Keep only the highest-quality row per name.
-  local rerollByName = {}
+  -- currentBuildIds is exact-tier by this point (ExpandCurrentBuildGroups
+  -- only fans a reported id out to siblings when that id ISN'T one of our
+  -- own rows), so each id here is a real, distinct tier the player
+  -- actually has -- show one row per id, including both tiers of the same
+  -- Echo if the player genuinely has more than one active.
   for echoId in pairs(currentBuildIds) do
     if not seen[echoId] then
       local echo = EchoCodexDataEchoes[echoId]
       if echo then
         echo.id = echoId
-        local norm = NormalizeOwnedName(echo.n) or tostring(echoId)
-        local existing = rerollByName[norm]
-        if not existing or echo.q > existing.q then
-          rerollByName[norm] = echo
-        end
+        entries[#entries + 1] = { echo = echo, status = "reroll" }
       end
     end
-  end
-  for _, echo in pairs(rerollByName) do
-    entries[#entries + 1] = { echo = echo, status = "reroll" }
   end
 
   table.sort(entries, function(a, b)
