@@ -5,20 +5,29 @@
 ## Version: 1.3.0
 ## SavedVariables: EchoCodexDB
 
-# Load order matters: Init.lua creates the shared `ns` namespace every
-# other file reads from, so it must come before them. Data files are pure
-# tables with no dependencies.
-Data_Echoes.lua
-Data_Tomes.lua
+# Paths use BACKSLASHES -- that is what the WoW client's .toc parser expects
+# for subdirectories, on every platform (Wine translates them).
+#
+# Load order matters: Init.lua creates the shared `ns` namespace that every
+# other file reads from, so it comes first. The Data files are pure tables
+# with no dependencies. Tabs register themselves into ns.tabs, so they must
+# load before Core.lua builds the main frame from that registry.
+
+Data\Data_Echoes.lua
+Data\Data_Tomes.lua
+
 Init.lua
 Widgets.lua
 DB.lua
 Util.lua
+
 Ownership.lua
 Debug.lua
 ImportExport.lua
-Tab_Browse.lua
+
 Wishlists.lua
-Tab_MissingTomes.lua
-Tab_CurrentBuild.lua
+Tabs\Tab_Browse.lua
+Tabs\Tab_MissingTomes.lua
+Tabs\Tab_CurrentBuild.lua
+
 Core.lua

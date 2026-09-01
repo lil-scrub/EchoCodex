@@ -17,13 +17,28 @@ package.path = "./?.lua;" .. package.path
 local mock = require("wow_mock")
 
 local ADDON_DIR = ".."
-local TOC_ORDER = {
-  "Data_Echoes.lua", "Data_Tomes.lua",
-  "Init.lua", "Widgets.lua", "DB.lua", "Util.lua",
-  "Ownership.lua", "Debug.lua", "ImportExport.lua",
-  "Tab_Browse.lua", "Wishlists.lua", "Tab_MissingTomes.lua",
-  "Tab_CurrentBuild.lua", "Core.lua",
-}
+
+-- Load order is read from the real EchoCodex.toc rather than duplicated
+-- here, so the two can never drift: adding, removing, or reordering a file
+-- in the .toc is picked up by the tests automatically. The .toc uses
+-- backslashes (what the WoW client expects for subdirectories); those are
+-- translated for the host filesystem.
+local function readTocOrder(path)
+  local files = {}
+  local fh = assert(io.open(path, "r"), "cannot open " .. path)
+  for line in fh:lines() do
+    line = line:gsub("\r", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    -- Skips blank lines, "## Directive:" headers, and "#" comments alike.
+    if line ~= "" and line:sub(1, 1) ~= "#" and line:lower():match("%.lua$") then
+      files[#files + 1] = line:gsub("\\", "/")
+    end
+  end
+  fh:close()
+  assert(#files > 0, "no .lua entries found in " .. path)
+  return files
+end
+
+local TOC_ORDER = readTocOrder(ADDON_DIR .. "/EchoCodex.toc")
 
 ----------------------------------------------------------------------
 -- Tiny test framework

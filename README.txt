@@ -149,14 +149,34 @@ SOURCE LAYOUT
 --------------
 Load order is set in EchoCodex.toc; Init.lua must come first because it
 creates the shared namespace (`ns`) the other files read from, using WoW's
-own private per-addon table -- nothing is added to _G.
+own private per-addon table -- nothing is added to _G. Paths in the .toc use
+backslashes, which is what the client's parser expects for subdirectories.
 
-  Data_Echoes.lua  Data_Tomes.lua   static snapshots (auto-generated)
-  Init.lua      namespace, constants, theme
+  Data/         static snapshots (auto-generated; do not hand-edit)
+    Data_Echoes.lua, Data_Tomes.lua
+  Init.lua      namespace, constants, theme, the tab registry
   Widgets.lua   flat button / checkbox / scrolling list primitives
   DB.lua        saved variables
   Util.lua      filtering, formatting, tooltips
-  Core.lua      ownership detection, the four tabs, main frame
+  Ownership.lua what you own and what's in this run's build
+  Debug.lua     "/eco debug" reporting
+  ImportExport.lua  EWL1 / EBH1 / EbonholdHub Build parsing
+  Wishlists.lua the named wishlists, their popups, and the Wishlist tab
+  Tabs/         one file per tab; each registers itself in ns.tabs
+    Tab_Browse.lua, Tab_MissingTomes.lua, Tab_CurrentBuild.lua
+  Core.lua      main frame, live refresh, loader, slash commands
+
+Tabs don't expose their widgets. Each registers a small table in ns.tabs
+(label / build / onSelect / refresh / resetScroll) and Core.lua drives them
+through that, so no file reaches into another's frames.
+
+PACKAGING
+---------
+  ./tools/package.sh [output-dir]      (default: ~/Downloads)
+
+Builds EchoCodex-<version>.zip, taking the version and the file list from
+EchoCodex.toc rather than a glob -- a glob silently drops files when the
+layout changes, producing a zip that looks right but fails to load.
 
 Convention: values assigned once (constants, functions) are re-localized at
 the top of each file that uses them. Values REASSIGNED at runtime --
