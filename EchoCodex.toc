@@ -5,6 +5,13 @@
 ## Version: 1.2.0
 ## SavedVariables: EchoCodexDB
 
+# Load order matters: Init.lua creates the shared `ns` namespace every
+# other file reads from, so it must come before them. Data files are pure
+# tables with no dependencies.
 Data_Echoes.lua
 Data_Tomes.lua
+Init.lua
+Widgets.lua
+DB.lua
+Util.lua
 Core.lua

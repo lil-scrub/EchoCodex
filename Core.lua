@@ -2,469 +2,48 @@
 -- Search Project Ebonhold's Echoes, build a wishlist, and check off Tomes as you find them.
 -- Data is a static snapshot (see Data_Echoes.lua / Data_Tomes.lua) -- it will drift from the
 -- live server as Echoes get added or rebalanced. Report stale data in the Ebonhold Discord.
-
-local ADDON_NAME = ...
-
-----------------------------------------------------------------------
--- Constants
-----------------------------------------------------------------------
-
-local ROW_HEIGHT = 30
-local FRAME_WIDTH = 720
-local FRAME_HEIGHT = 600
-
-local QUALITY_NAMES = { [0] = "Common", [1] = "Uncommon", [2] = "Rare", [3] = "Epic" }
-local QUALITY_COLORS = {
-  [0] = { r = 1,    g = 1,    b = 1 },
-  [1] = { r = 0.12, g = 1,    b = 0 },
-  [2] = { r = 0.15, g = 0.55, b = 1 },
-  [3] = { r = 0.72, g = 0.35, b = 0.98 },
-}
-
-local ROLE_LIST = { "Tank", "Melee DPS", "Ranged DPS", "Caster DPS", "Healer", "Survivability" }
-
-local CLASS_MASK_INFO = {
-  { mask = 1,    file = "WARRIOR",     label = "Warrior" },
-  { mask = 2,    file = "PALADIN",     label = "Paladin" },
-  { mask = 4,    file = "HUNTER",      label = "Hunter" },
-  { mask = 8,    file = "ROGUE",       label = "Rogue" },
-  { mask = 16,   file = "PRIEST",      label = "Priest" },
-  { mask = 32,   file = "DEATHKNIGHT", label = "Death Knight" },
-  { mask = 64,   file = "SHAMAN",      label = "Shaman" },
-  { mask = 128,  file = "MAGE",        label = "Mage" },
-  { mask = 256,  file = "WARLOCK",     label = "Warlock" },
-  { mask = 1024, file = "DRUID",       label = "Druid" },
-}
-local ALL_CLASS_MASK = 0
-for _, c in ipairs(CLASS_MASK_INFO) do ALL_CLASS_MASK = ALL_CLASS_MASK + c.mask end
-
-local CLASS_BY_FILE = {}
-for _, c in ipairs(CLASS_MASK_INFO) do CLASS_BY_FILE[c.file] = c end
-
-local band = bit and bit.band or function(a, b)
-  -- Fallback bitwise AND in case the bit library isn't exposed (shouldn't happen in-client).
-  local result, bitval = 0, 1
-  while a > 0 and b > 0 do
-    if a % 2 == 1 and b % 2 == 1 then result = result + bitval end
-    a, b, bitval = math.floor(a / 2), math.floor(b / 2), bitval * 2
-  end
-  return result
-end
-
-----------------------------------------------------------------------
--- Flat theme
 --
--- Visually similar to EbonholdHub's UI kit: flat colored panels (a plain
--- white texture tinted via SetVertexColor, no Blizzard dialog art), thin
--- 1px borders, and buttons/checkboxes whose whole rect is the click
--- target -- notably including the close button, which is what made the
--- old Blizzard dialog-border close icon annoying to hit.
-----------------------------------------------------------------------
+-- This file holds ownership detection, the four tabs, and the main frame.
+-- Shared pieces live alongside it (see EchoCodex.toc for load order):
+--   Init.lua     namespace, constants, theme
+--   Widgets.lua  flat button/checkbox/list primitives
+--   DB.lua       saved variables
+--   Util.lua     filtering, formatting, tooltips
 
-local FLAT_TEX = "Interface\\Buttons\\WHITE8X8"
+local ADDON_NAME, ns = ...
 
-local THEME = {
-  bg         = { 29 / 255, 31 / 255, 41 / 255, 1 },
-  bgHeader   = { 37 / 255, 40 / 255, 51 / 255, 1 },
-  elementBg  = { 31 / 255, 31 / 255, 38 / 255, 1 },
-  elementHov = { 40 / 255, 40 / 255, 48 / 255, 1 },
-  border     = { 46 / 255, 46 / 255, 56 / 255, 1 },
-  accent     = { 77 / 255, 191 / 255, 242 / 255, 1 },
-  text       = { 0.92, 0.92, 0.94, 1 },
-  textDim    = { 0.55, 0.55, 0.60, 1 },
-  danger     = { 0.90, 0.35, 0.35, 1 },
-}
+-- Assign-once values, re-localized for brevity and lookup speed. Safe to
+-- copy because nothing ever reassigns them -- unlike ns.charDB and the
+-- active-wishlist pointers below, which MUST stay `ns.`-qualified at every
+-- use site since they're swapped whenever the active wishlist changes.
+local EC = ns.EC
 
-local function Fill(parent, color, layer)
-  local tex = parent:CreateTexture(nil, layer or "BACKGROUND")
-  tex:SetTexture(FLAT_TEX)
-  tex:SetVertexColor(color[1], color[2], color[3], color[4] or 1)
-  tex:SetAllPoints(parent)
-  return tex
-end
+local ROW_HEIGHT = ns.ROW_HEIGHT
+local FRAME_WIDTH = ns.FRAME_WIDTH
+local FRAME_HEIGHT = ns.FRAME_HEIGHT
+local QUALITY_NAMES = ns.QUALITY_NAMES
+local QUALITY_COLORS = ns.QUALITY_COLORS
+local ROLE_LIST = ns.ROLE_LIST
+local CLASS_MASK_INFO = ns.CLASS_MASK_INFO
+local CLASS_BY_FILE = ns.CLASS_BY_FILE
+local FLAT_TEX = ns.FLAT_TEX
+local THEME = ns.THEME
 
-local function ThinBorder(frame, color, thickness)
-  thickness = thickness or 1
-  local function Edge()
-    local t = frame:CreateTexture(nil, "BORDER")
-    t:SetTexture(FLAT_TEX)
-    t:SetVertexColor(color[1], color[2], color[3], color[4] or 1)
-    return t
-  end
-  local top, bottom, left, right = Edge(), Edge(), Edge(), Edge()
-  top:SetPoint("TOPLEFT", 0, 0); top:SetPoint("TOPRIGHT", 0, 0); top:SetHeight(thickness)
-  bottom:SetPoint("BOTTOMLEFT", 0, 0); bottom:SetPoint("BOTTOMRIGHT", 0, 0); bottom:SetHeight(thickness)
-  left:SetPoint("TOPLEFT", 0, 0); left:SetPoint("BOTTOMLEFT", 0, 0); left:SetWidth(thickness)
-  right:SetPoint("TOPRIGHT", 0, 0); right:SetPoint("BOTTOMRIGHT", 0, 0); right:SetWidth(thickness)
-  return { top = top, bottom = bottom, left = left, right = right }
-end
+local Fill = ns.Fill
+local ThinBorder = ns.ThinBorder
+local SetBorderColor = ns.SetBorderColor
+local CreateFlatButton = ns.CreateFlatButton
+local CreateFlatCheckbox = ns.CreateFlatCheckbox
+local CreateList = ns.CreateList
 
-local function SetBorderColor(border, color)
-  border.top:SetVertexColor(color[1], color[2], color[3], color[4] or 1)
-  border.bottom:SetVertexColor(color[1], color[2], color[3], color[4] or 1)
-  border.left:SetVertexColor(color[1], color[2], color[3], color[4] or 1)
-  border.right:SetVertexColor(color[1], color[2], color[3], color[4] or 1)
-end
+local NewWishlist = ns.NewWishlist
+local InitDB = ns.InitDB
 
--- Flat button: fill + thin border + centered label, hover/press feedback.
--- Set its text via btn.label:SetText(...) -- plain Buttons only get a
--- working :SetText() from a Blizzard template, which this deliberately isn't.
-local function CreateFlatButton(parent, name, width, height, text)
-  local btn = CreateFrame("Button", name, parent)
-  btn:SetSize(width, height)
-  local bg = Fill(btn, THEME.elementBg)
-  local border = ThinBorder(btn, THEME.border, 1)
-
-  local label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  label:SetPoint("CENTER")
-  label:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-  if text then label:SetText(text) end
-
-  btn:SetScript("OnEnter", function()
-    bg:SetVertexColor(THEME.elementHov[1], THEME.elementHov[2], THEME.elementHov[3], 1)
-    SetBorderColor(border, THEME.accent)
-  end)
-  btn:SetScript("OnLeave", function()
-    bg:SetVertexColor(THEME.elementBg[1], THEME.elementBg[2], THEME.elementBg[3], 1)
-    SetBorderColor(border, THEME.border)
-  end)
-  btn:SetScript("OnMouseDown", function() label:SetPoint("CENTER", 0, -1) end)
-  btn:SetScript("OnMouseUp", function() label:SetPoint("CENTER", 0, 0) end)
-
-  btn.label = label
-  btn.bg = bg
-  btn.border = border
-  return btn
-end
-
--- Flat checkbox: a small tick-box (filled with the accent color when
--- checked) plus an optional clickable label. This is a plain Frame, not a
--- real CheckButton -- use :SetChecked()/:GetChecked() and the
--- .OnValueChanged(checked) callback instead of the CheckButton API.
-local function CreateFlatCheckbox(parent, name, text)
-  local wrap = CreateFrame("Frame", name, parent)
-  wrap:SetHeight(18)
-
-  local box = CreateFrame("Button", nil, wrap)
-  box:SetSize(18, 18)
-  box:SetPoint("LEFT", 0, 0)
-  Fill(box, THEME.elementBg)
-  ThinBorder(box, THEME.border, 1)
-
-  local mark = box:CreateTexture(nil, "OVERLAY")
-  mark:SetTexture(FLAT_TEX)
-  mark:SetVertexColor(THEME.accent[1], THEME.accent[2], THEME.accent[3], 1)
-  mark:SetPoint("TOPLEFT", 4, -4)
-  mark:SetPoint("BOTTOMRIGHT", -4, 4)
-  mark:Hide()
-
-  local labelBtn = CreateFrame("Button", nil, wrap)
-  labelBtn:SetPoint("LEFT", box, "RIGHT", 6, 0)
-  labelBtn:SetHeight(18)
-
-  local label = labelBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  label:SetPoint("LEFT", 0, 0)
-  label:SetJustifyH("LEFT")
-  label:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
-
-  local totalWidth = 18
-  if text and text ~= "" then
-    label:SetText(text)
-    local textW = math.ceil(label:GetStringWidth() or 0)
-    labelBtn:SetWidth(textW + 4)
-    totalWidth = 18 + 6 + textW + 4
-  else
-    labelBtn:SetWidth(1)
-  end
-  wrap:SetWidth(totalWidth)
-
-  wrap.checked = false
-  local function Toggle()
-    wrap.checked = not wrap.checked
-    if wrap.checked then mark:Show() else mark:Hide() end
-    if wrap.OnValueChanged then wrap.OnValueChanged(wrap.checked) end
-  end
-  box:SetScript("OnClick", Toggle)
-  labelBtn:SetScript("OnClick", Toggle)
-
-  function wrap:SetChecked(value)
-    self.checked = value and true or false
-    if self.checked then mark:Show() else mark:Hide() end
-  end
-  function wrap:GetChecked()
-    return self.checked
-  end
-
-  wrap.label = label
-  wrap.box = box
-  return wrap
-end
-
-----------------------------------------------------------------------
--- Saved variables
---
--- Wishlists are per-character: each character keeps its own named,
--- switchable wishlists, since what a Warlock alt wants has nothing to do
--- with what a Priest alt wants. This used to ride on WoW's own
--- SavedVariablesPerCharacter mechanism (a separate EchoCodexCharDB global,
--- declared via "## SavedVariablesPerCharacter:" in the .toc) -- dropped
--- after it never once produced a saved file on the account this was tested
--- on (verified directly: zero EchoCodex.lua under any character's
--- SavedVariables folder, while EbonholdHub's own per-character file sitting
--- right next to it saved and updated normally). Rather than chase why that
--- WoW mechanism silently didn't work here, character separation is now
--- done ourselves, keyed by realm+name, inside the account-wide EchoCodexDB
--- -- the file that demonstrably has been saving correctly the whole time.
-----------------------------------------------------------------------
-
-local DEFAULT_WISHLIST_NAME = "Default"
-
-local function NewWishlist()
-  return { items = {}, found = {} }
-end
-
-local function CharacterKey()
-  local realm = (GetRealmName and GetRealmName()) or "UnknownRealm"
-  local name = (UnitName and UnitName("player")) or "UnknownCharacter"
-  return realm .. " - " .. name
-end
-
--- This character's own slice of the account-wide DB -- everything that used
--- to hang off the old (non-functional) per-character global now hangs off
--- this instead. Same shape, different, proven-reliable root table.
-local charDB
-
--- Live pointers into the currently-active wishlist's tables. These ARE the
--- same table objects stored in charDB.wishlists[name] -- reassigned (not
--- copied) whenever the active wishlist switches, so every existing
--- read/write against them stays correct without threading a wishlist
--- parameter through the whole file.
-local activeWishlistItems, activeWishlistFound
-
-local function InitDB()
-  EchoCodexDB = EchoCodexDB or {}
-  EchoCodexDB.framePos = EchoCodexDB.framePos or nil
-  EchoCodexDB.characters = EchoCodexDB.characters or {}
-
-  local key = CharacterKey()
-  charDB = EchoCodexDB.characters[key]
-  if not charDB then
-    charDB = {}
-    EchoCodexDB.characters[key] = charDB
-  end
-  charDB.wishlists = charDB.wishlists or {}
-
-  if not next(charDB.wishlists) then
-    local seed = NewWishlist()
-    -- One-time migration: pull in whatever this account's old shared
-    -- (pre-per-character) wishlist/found tables held, if any.
-    for id in pairs(EchoCodexDB.wishlist or {}) do seed.items[id] = true end
-    for tomeId in pairs(EchoCodexDB.found or {}) do seed.found[tomeId] = true end
-    charDB.wishlists[DEFAULT_WISHLIST_NAME] = seed
-    charDB.activeWishlist = DEFAULT_WISHLIST_NAME
-  end
-
-  if not charDB.activeWishlist or not charDB.wishlists[charDB.activeWishlist] then
-    -- Stale/missing pointer (deleted wishlist, corrupted save) -- fall back
-    -- to whatever wishlist happens to exist.
-    charDB.activeWishlist = next(charDB.wishlists)
-  end
-
-  local active = charDB.wishlists[charDB.activeWishlist]
-  active.items = active.items or {}
-  active.found = active.found or {}
-  activeWishlistItems = active.items
-  activeWishlistFound = active.found
-end
-
-----------------------------------------------------------------------
--- Helpers
-----------------------------------------------------------------------
-
-local function ClassMaskToColoredString(cm)
-  if cm == ALL_CLASS_MASK then return "All Classes" end
-  local parts = {}
-  for _, c in ipairs(CLASS_MASK_INFO) do
-    if band(cm, c.mask) ~= 0 then
-      local col = RAID_CLASS_COLORS and RAID_CLASS_COLORS[c.file]
-      if col then
-        parts[#parts + 1] = string.format("|cff%02x%02x%02x%s|r", col.r * 255, col.g * 255, col.b * 255, c.label)
-      else
-        parts[#parts + 1] = c.label
-      end
-    end
-  end
-  if #parts == 0 then return "Unknown" end
-  return table.concat(parts, ", ")
-end
-
-local function RoleListToString(f)
-  if not f or #f == 0 then return nil end
-  return table.concat(f, ", ")
-end
-
-local function EchoMatchesFilters(e, state)
-  if state.classMask and band(e.cm, state.classMask) == 0 then return false end
-  if state.qualitySet and next(state.qualitySet) ~= nil and not state.qualitySet[e.q] then return false end
-  if state.role then
-    local found = false
-    if e.f then
-      for _, r in ipairs(e.f) do
-        if r == state.role then found = true break end
-      end
-    end
-    if not found then return false end
-  end
-  if state.tomeOnly and not e.t then return false end
-  if state.search and state.search ~= "" then
-    local hay = string.lower(e.n .. "  " .. e.d)
-    if not string.find(hay, state.search, 1, true) then return false end
-  end
-  return true
-end
-
-local function GetFilteredEchoes(state, idFilter)
-  local out = {}
-  for id, e in pairs(EchoCodexDataEchoes) do
-    if (not idFilter or idFilter[id]) and EchoMatchesFilters(e, state) then
-      e.id = id
-      out[#out + 1] = e
-    end
-  end
-  table.sort(out, function(a, b)
-    if a.q ~= b.q then return a.q > b.q end
-    return a.n < b.n
-  end)
-  return out
-end
-
-local function LocationSummary(locs)
-  if not locs or #locs == 0 then return "|cff888888Location not documented yet|r" end
-  local zoneName = EchoCodexZones[locs[1].zone] or locs[1].zone
-  local s = zoneName .. " - " .. (locs[1].placeName or "?")
-  if #locs > 1 then
-    s = s .. string.format(" (+%d more)", #locs - 1)
-  end
-  return s
-end
-
-local function ShowTomeTooltip(owner, tomeId)
-  local tome = EchoCodexTomes[tomeId]
-  if not tome then return end
-  GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
-  local q = (tome.quality == "epic") and QUALITY_COLORS[3] or QUALITY_COLORS[2]
-  GameTooltip:SetText(tome.name, q.r, q.g, q.b)
-  if tome.description and tome.description ~= "" then
-    GameTooltip:AddLine(tome.description, 0.9, 0.9, 0.9, true)
-  end
-  local locs = EchoCodexLocations[tomeId]
-  GameTooltip:AddLine(" ")
-  if not locs or #locs == 0 then
-    GameTooltip:AddLine("Location not documented yet.", 0.6, 0.6, 0.6, true)
-  else
-    GameTooltip:AddLine("Drop locations:", 1, 0.82, 0)
-    for _, loc in ipairs(locs) do
-      local zoneName = EchoCodexZones[loc.zone] or loc.zone
-      local line = zoneName .. " - " .. (loc.placeName or "?")
-      GameTooltip:AddLine(line, 1, 1, 1)
-      if loc.mobs and #loc.mobs > 0 then
-        GameTooltip:AddLine("  " .. table.concat(loc.mobs, ", "), 0.7, 0.7, 0.7, true)
-      end
-      if loc.notes and loc.notes ~= "" then
-        GameTooltip:AddLine("  " .. loc.notes, 0.5, 0.5, 0.5, true)
-      end
-    end
-  end
-  GameTooltip:Show()
-end
-
-----------------------------------------------------------------------
--- Generic recyclable row list (FauxScrollFrame based)
-----------------------------------------------------------------------
-
-local listSerial = 0
-
-local function CreateList(parent, width, height, rowFactory)
-  listSerial = listSerial + 1
-  local container = CreateFrame("Frame", "EchoCodexList" .. listSerial, parent)
-  container:SetSize(width, height)
-
-  -- FauxScrollFrameTemplate hangs its scrollbar off the RIGHT of this frame's
-  -- own edge (Blizzard's standard scrollbar art is ~31px wide), not inside
-  -- it -- so this needs the same gutter the rows reserve below, or the bar
-  -- renders mostly outside the container (and often outside the window).
-  local scroll = CreateFrame("ScrollFrame", "EchoCodexListScroll" .. listSerial, container, "FauxScrollFrameTemplate")
-  scroll:SetPoint("TOPLEFT", 0, 0)
-  scroll:SetPoint("BOTTOMRIGHT", -26, 0)
-
-  local list = { data = {}, rows = {}, container = container, scroll = scroll }
-  list.numVisible = math.floor(height / ROW_HEIGHT)
-
-  for i = 1, list.numVisible do
-    local row = rowFactory(container, i)
-    row:SetPoint("TOPLEFT", container, "TOPLEFT", 2, -((i - 1) * ROW_HEIGHT))
-    row:SetPoint("RIGHT", container, "RIGHT", -26, 0)
-    row:SetHeight(ROW_HEIGHT - 2)
-    row:Hide()
-    list.rows[i] = row
-  end
-
-  scroll:SetScript("OnVerticalScroll", function(self, offset)
-    FauxScrollFrame_OnVerticalScroll(self, offset, ROW_HEIGHT, function() list:Refresh() end)
-  end)
-
-  -- resetScroll defaults to false/omitted: most SetData calls are just "the
-  -- same list, something in it changed" (a background ownership refresh, an
-  -- add/remove) and should hold the scroll position, not yank the reader
-  -- back to the top mid-scroll. Pass true only where the result set itself
-  -- is genuinely new -- a search/filter change, or switching wishlists.
-  function list:SetData(data, resetScroll)
-    self.data = data
-    if resetScroll then
-      -- FauxScrollFrame_SetOffset isn't in the 3.3.5 API; set the field directly.
-      self.scroll.offset = 0
-      self.scroll:SetVerticalScroll(0)
-    end
-    self:Refresh()
-  end
-
-  function list:Refresh()
-    -- Clamp defensively if the data shrank (e.g. Checklist entries
-    -- auto-clearing) past the currently scrolled-to offset.
-    local maxOffset = math.max(0, #self.data - self.numVisible)
-    if (self.scroll.offset or 0) > maxOffset then
-      self.scroll.offset = maxOffset
-      self.scroll:SetVerticalScroll(maxOffset * ROW_HEIGHT)
-    end
-    FauxScrollFrame_Update(self.scroll, #self.data, self.numVisible, ROW_HEIGHT)
-    local offset = FauxScrollFrame_GetOffset(self.scroll)
-    for i = 1, self.numVisible do
-      local row = self.rows[i]
-      local item = self.data[offset + i]
-      if item then
-        self.updateRow(row, item, offset + i)
-        row:Show()
-      else
-        row:Hide()
-      end
-    end
-  end
-
-  return list
-end
-
-----------------------------------------------------------------------
--- Main frame + tabs
-----------------------------------------------------------------------
-
-local EC = {}
-EC.state = {
-  search = "",
-  classMask = nil,
-  qualitySet = {},
-  role = nil,
-  tomeOnly = false,
-}
+local ClassMaskToColoredString = ns.ClassMaskToColoredString
+local RoleListToString = ns.RoleListToString
+local GetFilteredEchoes = ns.GetFilteredEchoes
+local LocationSummary = ns.LocationSummary
+local ShowTomeTooltip = ns.ShowTomeTooltip
 
 ----------------------------------------------------------------------
 -- Character echo ownership, via the ProjectEbonhold API -- the server's
@@ -1392,13 +971,13 @@ local function BrowseUpdateRow(row, echo)
   if EC.IsEchoKnown(echo) then bits[#bits + 1] = "|cff4ade80Known|r" end
   row.metaText:SetText(table.concat(bits, "   "))
 
-  local inWishlist = activeWishlistItems[echo.id]
+  local inWishlist = ns.activeWishlistItems[echo.id]
   row.actionBtn.label:SetText(inWishlist and "Remove" or "Add")
   row.actionBtn:SetScript("OnClick", function()
-    if activeWishlistItems[echo.id] then
-      activeWishlistItems[echo.id] = nil
+    if ns.activeWishlistItems[echo.id] then
+      ns.activeWishlistItems[echo.id] = nil
     else
-      activeWishlistItems[echo.id] = true
+      ns.activeWishlistItems[echo.id] = true
     end
     EC.RefreshAll()
   end)
@@ -1701,10 +1280,10 @@ function EC.ImportEBHWishlist(text)
   local added, already, unknown = 0, 0, 0
   for _, id in ipairs(ids) do
     if EchoCodexDataEchoes[id] then
-      if activeWishlistItems[id] then
+      if ns.activeWishlistItems[id] then
         already = already + 1
       else
-        activeWishlistItems[id] = true
+        ns.activeWishlistItems[id] = true
         added = added + 1
       end
     else
@@ -1723,7 +1302,7 @@ end
 -- exact format, per its own Codec.DecodeEBH1).
 function EC.ExportActiveWishlistString()
   local parts = {}
-  for id in pairs(activeWishlistItems) do
+  for id in pairs(ns.activeWishlistItems) do
     local echo = EchoCodexDataEchoes[id]
     if echo then
       parts[#parts + 1] = string.format("%d.%d.%d", id, echo.q, 1)
@@ -1731,7 +1310,7 @@ function EC.ExportActiveWishlistString()
   end
   table.sort(parts)
   local classToken = myClassFile or "UNKNOWN"
-  local name = charDB.activeWishlist or "Echo Codex Wishlist"
+  local name = ns.charDB.activeWishlist or "Echo Codex Wishlist"
   return "EBH1:" .. table.concat(parts, ",") .. ":" .. classToken .. ":" .. name, #parts
 end
 
@@ -1739,12 +1318,12 @@ end
 -- you'll pick up naturally while leveling, so there's nothing to track down).
 function EC.PruneNonTomeWishlist()
   local removed, keptTome, unknown = 0, 0, 0
-  for id in pairs(activeWishlistItems) do
+  for id in pairs(ns.activeWishlistItems) do
     local echo = EchoCodexDataEchoes[id]
     if not echo then
       unknown = unknown + 1
     elseif not echo.t then
-      activeWishlistItems[id] = nil
+      ns.activeWishlistItems[id] = nil
       removed = removed + 1
     else
       keptTome = keptTome + 1
@@ -1764,20 +1343,20 @@ local function WishlistUpdateRow(row, echo)
   if EC.IsEchoKnown(echo) then metaBits[#metaBits + 1] = "|cff4ade80Known|r" end
   row.metaText:SetText(table.concat(metaBits, "  "))
   row.removeBtn:SetScript("OnClick", function()
-    activeWishlistItems[echo.id] = nil
+    ns.activeWishlistItems[echo.id] = nil
     EC.RefreshAll()
   end)
 end
 
 function EC.RefreshWishlist()
   local ids = {}
-  for id in pairs(activeWishlistItems) do ids[id] = true end
+  for id in pairs(ns.activeWishlistItems) do ids[id] = true end
   local data = GetFilteredEchoes({}, ids)
   wishlistList:SetData(data)
   local tomeCount = 0
   for _, e in ipairs(data) do if e.t then tomeCount = tomeCount + 1 end end
   wishlistCountFS:SetText(string.format("%d item%s in \"%s\"  (%d require a Tome)",
-    #data, #data == 1 and "" or "s", charDB.activeWishlist or "?", tomeCount))
+    #data, #data == 1 and "" or "s", ns.charDB.activeWishlist or "?", tomeCount))
   if wishlistEmptyText then
     if #data == 0 then wishlistEmptyText:Show() else wishlistEmptyText:Hide() end
   end
@@ -1791,21 +1370,21 @@ local wishlistDropdown
 
 function EC.ListWishlistNames()
   local names = {}
-  for name in pairs(charDB.wishlists) do names[#names + 1] = name end
+  for name in pairs(ns.charDB.wishlists) do names[#names + 1] = name end
   table.sort(names)
   return names
 end
 
 function EC.GetActiveWishlistName()
-  return charDB.activeWishlist
+  return ns.charDB.activeWishlist
 end
 
 function EC.SetActiveWishlist(name)
-  local ws = charDB.wishlists[name]
+  local ws = ns.charDB.wishlists[name]
   if not ws then return false end
-  charDB.activeWishlist = name
-  activeWishlistItems = ws.items
-  activeWishlistFound = ws.found
+  ns.charDB.activeWishlist = name
+  ns.activeWishlistItems = ws.items
+  ns.activeWishlistFound = ws.found
   if wishlistDropdown then UIDropDownMenu_SetText(wishlistDropdown, name) end
   -- A different wishlist is a genuinely new list, not an in-place update --
   -- start both its views at the top rather than holding whatever offset the
@@ -1819,25 +1398,25 @@ end
 function EC.CreateWishlist(name)
   name = strtrim(name or "")
   if name == "" then return false, "Name can't be empty." end
-  if charDB.wishlists[name] then
+  if ns.charDB.wishlists[name] then
     return false, "A wishlist named \"" .. name .. "\" already exists."
   end
-  charDB.wishlists[name] = NewWishlist()
+  ns.charDB.wishlists[name] = NewWishlist()
   EC.SetActiveWishlist(name)
   return true
 end
 
 function EC.RenameActiveWishlist(newName)
   newName = strtrim(newName or "")
-  local oldName = charDB.activeWishlist
+  local oldName = ns.charDB.activeWishlist
   if newName == "" then return false, "Name can't be empty." end
   if newName == oldName then return true end
-  if charDB.wishlists[newName] then
+  if ns.charDB.wishlists[newName] then
     return false, "A wishlist named \"" .. newName .. "\" already exists."
   end
-  charDB.wishlists[newName] = charDB.wishlists[oldName]
-  charDB.wishlists[oldName] = nil
-  charDB.activeWishlist = newName
+  ns.charDB.wishlists[newName] = ns.charDB.wishlists[oldName]
+  ns.charDB.wishlists[oldName] = nil
+  ns.charDB.activeWishlist = newName
   if wishlistDropdown then UIDropDownMenu_SetText(wishlistDropdown, newName) end
   return true
 end
@@ -1846,9 +1425,9 @@ function EC.DeleteActiveWishlist()
   if #EC.ListWishlistNames() <= 1 then
     return false, "Can't delete your only wishlist."
   end
-  local oldName = charDB.activeWishlist
-  charDB.wishlists[oldName] = nil
-  EC.SetActiveWishlist(next(charDB.wishlists))
+  local oldName = ns.charDB.activeWishlist
+  ns.charDB.wishlists[oldName] = nil
+  EC.SetActiveWishlist(next(ns.charDB.wishlists))
   return true, oldName
 end
 
@@ -1856,23 +1435,23 @@ end
 -- in that sequence that isn't already taken.
 local function SuggestDuplicateName(baseName)
   local candidate = baseName .. " Copy"
-  if not charDB.wishlists[candidate] then return candidate end
+  if not ns.charDB.wishlists[candidate] then return candidate end
   local n = 2
-  while charDB.wishlists[baseName .. " Copy " .. n] do n = n + 1 end
+  while ns.charDB.wishlists[baseName .. " Copy " .. n] do n = n + 1 end
   return baseName .. " Copy " .. n
 end
 
 function EC.DuplicateActiveWishlist(newName)
   newName = strtrim(newName or "")
   if newName == "" then return false, "Name can't be empty." end
-  if charDB.wishlists[newName] then
+  if ns.charDB.wishlists[newName] then
     return false, "A wishlist named \"" .. newName .. "\" already exists."
   end
-  local source = charDB.wishlists[charDB.activeWishlist]
+  local source = ns.charDB.wishlists[ns.charDB.activeWishlist]
   local copy = { items = {}, found = {} }
   for id in pairs(source.items) do copy.items[id] = true end
   for key in pairs(source.found) do copy.found[key] = true end
-  charDB.wishlists[newName] = copy
+  ns.charDB.wishlists[newName] = copy
   EC.SetActiveWishlist(newName)
   return true
 end
@@ -1924,7 +1503,7 @@ StaticPopupDialogs["ECHOCODEX_RENAME_WISHLIST"] = {
   OnShow = function(self)
     local editBox = ResolvePopupEditBox(self)
     if editBox then
-      editBox:SetText(charDB.activeWishlist)
+      editBox:SetText(ns.charDB.activeWishlist)
       editBox:HighlightText()
       editBox:SetFocus()
     end
@@ -1970,7 +1549,7 @@ StaticPopupDialogs["ECHOCODEX_DUPLICATE_WISHLIST"] = {
   OnShow = function(self)
     local editBox = ResolvePopupEditBox(self)
     if editBox then
-      editBox:SetText(SuggestDuplicateName(charDB.activeWishlist))
+      editBox:SetText(SuggestDuplicateName(ns.charDB.activeWishlist))
       editBox:HighlightText()
       editBox:SetFocus()
     end
@@ -2017,7 +1596,7 @@ local function WishlistDropdown_Init(self, level)
   for _, name in ipairs(EC.ListWishlistNames()) do
     local info = UIDropDownMenu_CreateInfo()
     info.text = name
-    info.checked = (name == charDB.activeWishlist)
+    info.checked = (name == ns.charDB.activeWishlist)
     info.func = function() EC.SetActiveWishlist(name) end
     UIDropDownMenu_AddButton(info)
   end
@@ -2038,7 +1617,7 @@ local function BuildWishlistTab(parent)
   wishlistDropdown:SetPoint("LEFT", wishlistLabel, "RIGHT", -2, -2)
   UIDropDownMenu_SetWidth(wishlistDropdown, 160)
   UIDropDownMenu_Initialize(wishlistDropdown, WishlistDropdown_Init)
-  UIDropDownMenu_SetText(wishlistDropdown, charDB.activeWishlist)
+  UIDropDownMenu_SetText(wishlistDropdown, ns.charDB.activeWishlist)
 
   local newWishlistBtn = CreateFlatButton(f, "EchoCodexNewWishlistBtn", 46, 20, "New")
   newWishlistBtn:SetPoint("LEFT", wishlistDropdown, "RIGHT", 2, 2)
@@ -2051,13 +1630,13 @@ local function BuildWishlistTab(parent)
   local deleteWishlistBtn = CreateFlatButton(f, "EchoCodexDeleteWishlistBtn", 66, 20, "Delete")
   deleteWishlistBtn:SetPoint("LEFT", renameWishlistBtn, "RIGHT", 6, 0)
   deleteWishlistBtn:HookScript("OnClick", function()
-    StaticPopup_Show("ECHOCODEX_DELETE_WISHLIST", charDB.activeWishlist)
+    StaticPopup_Show("ECHOCODEX_DELETE_WISHLIST", ns.charDB.activeWishlist)
   end)
 
   local duplicateWishlistBtn = CreateFlatButton(f, "EchoCodexDuplicateWishlistBtn", 86, 20, "Duplicate")
   duplicateWishlistBtn:SetPoint("LEFT", deleteWishlistBtn, "RIGHT", 6, 0)
   duplicateWishlistBtn:HookScript("OnClick", function()
-    StaticPopup_Show("ECHOCODEX_DUPLICATE_WISHLIST", charDB.activeWishlist)
+    StaticPopup_Show("ECHOCODEX_DUPLICATE_WISHLIST", ns.charDB.activeWishlist)
   end)
 
   local hint = f:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
@@ -2146,7 +1725,7 @@ local function BuildWishlistTab(parent)
       DEFAULT_CHAT_FRAME:AddMessage("|cffffd100[Echo Codex]|r This wishlist is empty -- nothing to export.")
       return
     end
-    StaticPopup_Show("ECHOCODEX_EXPORT_WISHLIST", charDB.activeWishlist)
+    StaticPopup_Show("ECHOCODEX_EXPORT_WISHLIST", ns.charDB.activeWishlist)
   end)
 
   wishlistList = CreateList(f, FRAME_WIDTH - 40, FRAME_HEIGHT - 285, WishlistRowFactory)
@@ -2199,7 +1778,7 @@ end
 
 local function ChecklistUpdateRow(row, entry)
   row.tomeId = entry.tomeId
-  local found = activeWishlistFound[entry.tomeId]
+  local found = ns.activeWishlistFound[entry.tomeId]
 
   local c = QUALITY_COLORS[entry.echo.q]
   row.nameText:SetText(entry.tome.name)
@@ -2229,7 +1808,7 @@ function EC.RefreshChecklist()
   EC.RefreshOwnedCache()
 
   local allEntries = {}
-  for echoId in pairs(activeWishlistItems) do
+  for echoId in pairs(ns.activeWishlistItems) do
     local tomeId = EchoCodexEchoToTome[echoId]
     local echo = EchoCodexDataEchoes[echoId]
     if tomeId and echo then
@@ -2249,14 +1828,14 @@ function EC.RefreshChecklist()
   -- Auto-check off anything the character already knows, so the list only
   -- ever asks you to manually track down what you're actually missing.
   for _, e in ipairs(allEntries) do
-    if not activeWishlistFound[e.tomeId] and EC.IsEchoKnown(e.echo) then
-      activeWishlistFound[e.tomeId] = true
+    if not ns.activeWishlistFound[e.tomeId] and EC.IsEchoKnown(e.echo) then
+      ns.activeWishlistFound[e.tomeId] = true
     end
   end
 
   table.sort(allEntries, function(a, b)
-    local fa = activeWishlistFound[a.tomeId] and 1 or 0
-    local fb = activeWishlistFound[b.tomeId] and 1 or 0
+    local fa = ns.activeWishlistFound[a.tomeId] and 1 or 0
+    local fb = ns.activeWishlistFound[b.tomeId] and 1 or 0
     if fa ~= fb then return fa < fb end
     if a.echo.q ~= b.echo.q then return a.echo.q > b.echo.q end
     return a.tome.name < b.tome.name
@@ -2264,25 +1843,25 @@ function EC.RefreshChecklist()
 
   local foundCount = 0
   for _, e in ipairs(allEntries) do
-    if activeWishlistFound[e.tomeId] then foundCount = foundCount + 1 end
+    if ns.activeWishlistFound[e.tomeId] then foundCount = foundCount + 1 end
   end
 
   local visible = allEntries
   if not checklistShowCompleted then
     visible = {}
     for _, e in ipairs(allEntries) do
-      if not activeWishlistFound[e.tomeId] then visible[#visible + 1] = e end
+      if not ns.activeWishlistFound[e.tomeId] then visible[#visible + 1] = e end
     end
   end
 
   checklistList:SetData(visible)
 
   local nonTome = 0
-  for echoId in pairs(activeWishlistItems) do
+  for echoId in pairs(ns.activeWishlistItems) do
     if not EchoCodexEchoToTome[echoId] then nonTome = nonTome + 1 end
   end
 
-  local msg = string.format("\"%s\": %d / %d Tomes found", charDB.activeWishlist or "?", foundCount, #allEntries)
+  local msg = string.format("\"%s\": %d / %d Tomes found", ns.charDB.activeWishlist or "?", foundCount, #allEntries)
   if not checklistShowCompleted and foundCount > 0 then
     msg = msg .. string.format("  |cff4ade80(%d completed, hidden)|r", foundCount)
   end
@@ -2434,7 +2013,7 @@ function EC.RefreshCurrentBuild()
   local entries = {}
   local seen = {}
 
-  for echoId in pairs(activeWishlistItems) do
+  for echoId in pairs(ns.activeWishlistItems) do
     local echo = EchoCodexDataEchoes[echoId]
     if echo then
       echo.id = echoId
@@ -2478,7 +2057,7 @@ function EC.RefreshCurrentBuild()
     else reroll = reroll + 1 end
   end
 
-  local msg = string.format("\"%s\": %d / %d wishlist Echoes already in your current build", charDB.activeWishlist or "?", have, have + missing)
+  local msg = string.format("\"%s\": %d / %d wishlist Echoes already in your current build", ns.charDB.activeWishlist or "?", have, have + missing)
   if reroll > 0 then
     msg = msg .. string.format("   |cfff87171(%d equipped Echo%s not on this wishlist -- reroll candidates)|r", reroll, reroll == 1 and "" or "s")
   end
