@@ -500,6 +500,22 @@ local function ScanForOwnership(t, seen)
   end
 end
 
+-- "Current build" -- what's actively equipped THIS run, per GetGrantedPerks
+-- specifically -- distinct from ownedIds above, which also folds in
+-- GetDiscoveredEchoes (everything ever unlocked, any run). The Current
+-- Build tab diffs this narrower set against the wishlist.
+local currentBuildIds = {}
+
+local function ScanForCurrentBuild(t, seen)
+  if type(t) ~= "table" or seen[t] then return end
+  seen[t] = true
+  for k, v in pairs(t) do
+    if type(k) == "number" and k >= 200000 and k < 300000 then currentBuildIds[k] = true end
+    if type(v) == "number" and v >= 200000 and v < 300000 then currentBuildIds[v] = true end
+    if type(v) == "table" then ScanForCurrentBuild(v, seen) end
+  end
+end
+
 -- Learning a Tome permanently adds it to the "Echoes" tab of the spellbook --
 -- this is the actual source of truth for "have I learned this Tome," not
 -- PerkService's granted/locked tables, which only reflect the current
@@ -994,6 +1010,7 @@ end
 
 function EC.RefreshOwnedCache()
   ownedIds, ownedNames = {}, {}
+  currentBuildIds = {}
   foundEchoesTab = false
 
   -- Kept as a secondary check: permanently-learned Tomes, if they ever do
@@ -1021,7 +1038,10 @@ function EC.RefreshOwnedCache()
     end
     if service.GetGrantedPerks then
       local ok, granted = pcall(service.GetGrantedPerks)
-      if ok then ScanForOwnership(granted, {}) end
+      if ok then
+        ScanForOwnership(granted, {})
+        ScanForCurrentBuild(granted, {})
+      end
     end
     if service.GetLockedPerks then
       local ok, locked = pcall(service.GetLockedPerks)
@@ -1032,6 +1052,7 @@ function EC.RefreshOwnedCache()
   if ProjectEbonhold.Perks then
     ScanForOwnership(ProjectEbonhold.Perks.grantedPerks, {})
     ScanForOwnership(ProjectEbonhold.Perks.lockedPerks, {})
+    ScanForCurrentBuild(ProjectEbonhold.Perks.grantedPerks, {})
   end
 
   if ProjectEbonholdDB and type(ProjectEbonholdDB.cachedPerkCounts) == "table" then
@@ -1054,10 +1075,16 @@ function EC.IsEchoKnown(echo)
   return norm ~= nil and ownedNames[norm] == true
 end
 
+-- Narrower than IsEchoKnown: only true if the Echo is one of THIS run's
+-- active picks (GetGrantedPerks), not merely ever-discovered.
+function EC.IsEchoInCurrentBuild(echo)
+  return currentBuildIds[echo.id] == true
+end
+
 local mainFrame, tabButtons, tabFrames, activeTab
-local browseList, wishlistList, checklistList
-local resultCountFS, wishlistCountFS, checklistProgressFS
-local wishlistEmptyText, checklistEmptyText
+local browseList, wishlistList, checklistList, currentBuildList
+local resultCountFS, wishlistCountFS, checklistProgressFS, currentBuildProgressFS
+local wishlistEmptyText, checklistEmptyText, currentBuildEmptyText
 
 local function BuildTabButton(parent, name, text)
   local btn = CreateFrame("Button", name, parent)
@@ -1099,6 +1126,7 @@ local function SelectTab(name)
   if name == "browse" and browseList then browseList:Refresh()
   elseif name == "wishlist" then EC.RefreshWishlist()
   elseif name == "checklist" then EC.RefreshChecklist()
+  elseif name == "currentbuild" then EC.RefreshCurrentBuild()
   end
 end
 
@@ -2082,6 +2110,157 @@ local function BuildChecklistTab(parent)
 end
 
 ----------------------------------------------------------------------
+-- Current Build tab
+--
+-- Diffs the current run's active Echo picks (EC.IsEchoInCurrentBuild, fed by
+-- GetGrantedPerks -- see the comment above ScanForCurrentBuild) against the
+-- active wishlist: what you have and want, what you still need to track
+-- down, and -- the reverse case -- what's equipped right now but never made
+-- the wishlist, i.e. a safe reroll candidate.
+----------------------------------------------------------------------
+
+local CURRENT_BUILD_STATUS = {
+  have    = { order = 0, label = "|cff4ade80In build|r" },
+  missing = { order = 1, label = "|cffffd100Missing|r" },
+  reroll  = { order = 2, label = "|cfff87171Not wishlisted -- reroll?|r" },
+}
+
+local function CurrentBuildRowFactory(parent, i)
+  local row = CreateFrame("Button", "EchoCodexBuildRow" .. i, parent)
+  row:SetHeight(ROW_HEIGHT - 2)
+
+  row.bg = row:CreateTexture(nil, "BACKGROUND")
+  row.bg:SetAllPoints()
+  row.bg:SetTexture(1, 1, 1, (i % 2 == 0) and 0.04 or 0.0)
+
+  row.nameText = row:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+  row.nameText:SetPoint("LEFT", 8, 0)
+  row.nameText:SetJustifyH("LEFT")
+  row.nameText:SetWidth(320)
+
+  row.statusText = row:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  row.statusText:SetPoint("LEFT", row.nameText, "RIGHT", 6, 0)
+  row.statusText:SetJustifyH("LEFT")
+  row.statusText:SetWidth(220)
+
+  row:SetScript("OnEnter", function(self)
+    if not self.echo then return end
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    local c = QUALITY_COLORS[self.echo.q]
+    GameTooltip:SetText(self.echo.n, c.r, c.g, c.b)
+    GameTooltip:AddLine(self.echo.d, 0.9, 0.9, 0.9, true)
+    GameTooltip:AddLine(" ")
+    GameTooltip:AddLine(ClassMaskToColoredString(self.echo.cm), 1, 1, 1, true)
+    local roles = RoleListToString(self.echo.f)
+    if roles then GameTooltip:AddLine(roles, 0.6, 0.6, 0.6) end
+    GameTooltip:Show()
+  end)
+  row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+  return row
+end
+
+local function CurrentBuildUpdateRow(row, entry)
+  row.echo = entry.echo
+  local c = QUALITY_COLORS[entry.echo.q]
+  row.nameText:SetText(entry.echo.n)
+  row.nameText:SetTextColor(c.r, c.g, c.b)
+  row.statusText:SetText(CURRENT_BUILD_STATUS[entry.status].label)
+end
+
+function EC.RefreshCurrentBuild()
+  EC.RefreshOwnedCache()
+
+  local entries = {}
+  local seen = {}
+
+  for echoId in pairs(activeWishlistItems) do
+    local echo = EchoCodexDataEchoes[echoId]
+    if echo then
+      echo.id = echoId
+      seen[echoId] = true
+      entries[#entries + 1] = {
+        echo = echo,
+        status = EC.IsEchoInCurrentBuild(echo) and "have" or "missing",
+      }
+    end
+  end
+
+  -- Reverse direction: currently equipped, but never made the wishlist.
+  for echoId in pairs(currentBuildIds) do
+    if not seen[echoId] then
+      local echo = EchoCodexDataEchoes[echoId]
+      if echo then
+        echo.id = echoId
+        entries[#entries + 1] = { echo = echo, status = "reroll" }
+      end
+    end
+  end
+
+  table.sort(entries, function(a, b)
+    local oa, ob = CURRENT_BUILD_STATUS[a.status].order, CURRENT_BUILD_STATUS[b.status].order
+    if oa ~= ob then return oa < ob end
+    if a.echo.q ~= b.echo.q then return a.echo.q > b.echo.q end
+    return a.echo.n < b.echo.n
+  end)
+
+  currentBuildList:SetData(entries)
+
+  local have, missing, reroll = 0, 0, 0
+  for _, e in ipairs(entries) do
+    if e.status == "have" then have = have + 1
+    elseif e.status == "missing" then missing = missing + 1
+    else reroll = reroll + 1 end
+  end
+
+  local msg = string.format("\"%s\": %d / %d wishlist Echoes already in your current build", charDB.activeWishlist or "?", have, have + missing)
+  if reroll > 0 then
+    msg = msg .. string.format("   |cfff87171(%d equipped Echo%s not on this wishlist -- reroll candidates)|r", reroll, reroll == 1 and "" or "s")
+  end
+  if not EC.HasOwnershipData() then
+    msg = msg .. "   |cff886644(auto-detect unavailable this session)|r"
+  end
+  currentBuildProgressFS:SetText(msg)
+
+  if currentBuildEmptyText then
+    if #entries == 0 then
+      currentBuildEmptyText:SetText("Nothing to compare yet -- add Echoes to your wishlist, and make sure the server's Echo Journal has loaded this session.")
+      currentBuildEmptyText:Show()
+    else
+      currentBuildEmptyText:Hide()
+    end
+  end
+end
+
+local function BuildCurrentBuildTab(parent)
+  local f = CreateFrame("Frame", nil, parent)
+  f:SetAllPoints()
+
+  local hint = f:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  hint:SetPoint("TOPLEFT", 12, -12)
+  hint:SetWidth(FRAME_WIDTH - 60)
+  hint:SetJustifyH("LEFT")
+  hint:SetTextColor(THEME.textDim[1], THEME.textDim[2], THEME.textDim[3])
+  hint:SetText("Your current run's active Echoes vs. this wishlist: what you have, what you're still missing, and what's equipped but not wishlisted -- safe to reroll away.")
+
+  currentBuildProgressFS = f:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  currentBuildProgressFS:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -10)
+  currentBuildProgressFS:SetTextColor(THEME.text[1], THEME.text[2], THEME.text[3])
+
+  currentBuildList = CreateList(f, FRAME_WIDTH - 40, FRAME_HEIGHT - 165, CurrentBuildRowFactory)
+  currentBuildList.container:SetPoint("TOPLEFT", currentBuildProgressFS, "BOTTOMLEFT", 0, -10)
+  currentBuildList.updateRow = CurrentBuildUpdateRow
+
+  currentBuildEmptyText = f:CreateFontString(nil, "ARTWORK", "GameFontDisable")
+  currentBuildEmptyText:SetPoint("CENTER", currentBuildList.container, "CENTER", 0, 40)
+  currentBuildEmptyText:SetWidth(FRAME_WIDTH - 100)
+  currentBuildEmptyText:SetText("Nothing to compare yet -- add Echoes to your wishlist.")
+  currentBuildEmptyText:Hide()
+
+  return f
+end
+
+----------------------------------------------------------------------
 -- Refresh-all + frame construction
 ----------------------------------------------------------------------
 
@@ -2091,6 +2270,7 @@ function EC.RefreshAll()
   EC.UpdateResultCount()
   EC.RefreshWishlist()
   EC.RefreshChecklist()
+  EC.RefreshCurrentBuild()
 end
 
 local function BuildMainFrame()
@@ -2167,8 +2347,8 @@ local function BuildMainFrame()
   tabSep:SetPoint("BOTTOMRIGHT", 0, 0)
   tabSep:SetHeight(1)
 
-  local names = { "browse", "wishlist", "checklist" }
-  local labels = { browse = "Browse", wishlist = "Wishlist", checklist = "Checklist" }
+  local names = { "browse", "wishlist", "checklist", "currentbuild" }
+  local labels = { browse = "Browse", wishlist = "Wishlist", checklist = "Checklist", currentbuild = "Current Build" }
   local prevTab
   for i, n in ipairs(names) do
     local btn = BuildTabButton(tabHolder, "EchoCodexTabButton" .. i, labels[n])
@@ -2185,6 +2365,7 @@ local function BuildMainFrame()
   tabFrames.browse = BuildBrowseTab(contentHolder)
   tabFrames.wishlist = BuildWishlistTab(contentHolder)
   tabFrames.checklist = BuildChecklistTab(contentHolder)
+  tabFrames.currentbuild = BuildCurrentBuildTab(contentHolder)
 
   if EchoCodexDB.framePos then
     mainFrame:ClearAllPoints()
@@ -2221,6 +2402,7 @@ local function RefreshOwnershipLive()
     if activeTab == "browse" and browseList then browseList:Refresh()
     elseif activeTab == "wishlist" then EC.RefreshWishlist()
     elseif activeTab == "checklist" then EC.RefreshChecklist()
+    elseif activeTab == "currentbuild" then EC.RefreshCurrentBuild()
     end
   end
 end
