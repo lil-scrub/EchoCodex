@@ -78,9 +78,53 @@ local function LocationSummary(locs)
   return s
 end
 
-local function ShowTomeTooltip(owner, tomeId)
-  local tome = EchoCodexTomes[tomeId]
-  if not tome then return end
+-- One-line form of an inferred source (Data/TomesInferred.lua). Deliberately
+-- shaped like LocationSummary's output but tagged, so a derived row can never
+-- be mistaken for one the farming map actually documents.
+local function InferredLocationSummary(inf)
+  if not inf then return nil end
+  local zoneName = EchoCodexZones[inf.zone] or inf.zone
+  local s = (inf.placeName and inf.placeName ~= "") and inf.placeName or zoneName
+  if inf.mobs and #inf.mobs > 0 then
+    s = s .. " - " .. table.concat(inf.mobs, ", ")
+  end
+  return "|cffb8925a" .. s .. "  (inferred)|r"
+end
+
+-- `fallbackEcho` is for Echoes flagged Tome-locked that our Tome snapshot has
+-- no row for at all: there's no Tome name, description or location to show,
+-- but the Echo's own text is still more use than an empty tooltip. `inferred`
+-- optionally adds our own derived source for it, always labelled as derived.
+local function ShowTomeTooltip(owner, tomeId, fallbackEcho, inferred)
+  local tome = tomeId and EchoCodexTomes[tomeId]
+  if not tome then
+    if not fallbackEcho then return end
+    GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+    local eq = QUALITY_COLORS[fallbackEcho.q] or QUALITY_COLORS[2]
+    GameTooltip:SetText(fallbackEcho.n, eq.r, eq.g, eq.b)
+    if fallbackEcho.d and fallbackEcho.d ~= "" then
+      GameTooltip:AddLine(fallbackEcho.d, 0.9, 0.9, 0.9, true)
+    end
+    GameTooltip:AddLine(" ")
+    if inferred then
+      GameTooltip:AddLine("Likely source (INFERRED -- not from the farming map):", 0.72, 0.57, 0.35)
+      local zoneName = EchoCodexZones[inferred.zone] or inferred.zone
+      GameTooltip:AddLine(inferred.placeName or zoneName, 1, 1, 1)
+      if inferred.mobs and #inferred.mobs > 0 then
+        GameTooltip:AddLine("  " .. table.concat(inferred.mobs, ", "), 0.7, 0.7, 0.7, true)
+      end
+      if inferred.basis and inferred.basis ~= "" then
+        GameTooltip:AddLine("  " .. inferred.basis, 0.5, 0.5, 0.5, true)
+      end
+      if inferred.confidence == "low" then
+        GameTooltip:AddLine("  Low confidence -- verify before farming it.", 0.75, 0.4, 0.3, true)
+      end
+    else
+      GameTooltip:AddLine("This Echo needs a Tome, but no Tome is recorded for it in this data snapshot -- no drop location to show yet.", 0.85, 0.65, 0.4, true)
+    end
+    GameTooltip:Show()
+    return
+  end
   GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
   local q = (tome.quality == "epic") and QUALITY_COLORS[3] or QUALITY_COLORS[2]
   GameTooltip:SetText(tome.name, q.r, q.g, q.b)
@@ -113,4 +157,5 @@ ns.RoleListToString = RoleListToString
 ns.EchoMatchesFilters = EchoMatchesFilters
 ns.GetFilteredEchoes = GetFilteredEchoes
 ns.LocationSummary = LocationSummary
+ns.InferredLocationSummary = InferredLocationSummary
 ns.ShowTomeTooltip = ShowTomeTooltip

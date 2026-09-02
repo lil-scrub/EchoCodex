@@ -8,7 +8,7 @@ and check off Tomes as you find them -- with drop locations included.
 INSTALL
 -------
 1. Unzip this so you end up with a folder literally named "EchoCodex"
-   containing EchoCodex.toc, Core.lua, Data/Echoes.lua, Data/Tomes.lua.
+   containing EchoCodex.toc, Core.lua, and the Data/ folder.
 2. Drop that "EchoCodex" folder into:
      World of Warcraft\Interface\AddOns\
    (so the .toc file is at ...\AddOns\EchoCodex\EchoCodex.toc)
@@ -85,6 +85,60 @@ Missing Tomes tab
   - Hover a row to see the drop location(s): zone, spot, mobs, and any
     notes. Entries with a Tome we don't have a location for yet are marked
     "Location not documented yet."
+  - Three different kinds of row, kept visually distinct so you always know
+    how much to trust what you're reading:
+      normal (white)             a location the farming map documents.
+      "Location not documented    we know which Tome you need, the map just
+       yet" (grey)                hasn't mapped where it drops.
+      "... (inferred)" (tan)      NOT from the map. Our own derivation --
+                                  see INFERRED TOME SOURCES below.
+      "No Tome recorded in this   the Echo is flagged Tome-locked, we have
+       data snapshot" (brown)     no Tome row AND no inference for it.
+    Membership of this list is decided by the Echo's own Tome-locked flag,
+    NOT by the Echo->Tome table: those are two separate snapshots and the
+    Tome one has thinner coverage (currently 128 Tomes against 148
+    Tome-locked Echoes). Gating on the Echo->Tome table instead used to hide
+    exactly those 20 -- the ones you can't look up in the addon anywhere
+    else either -- and worse, counted them in the footer as "learned
+    automatically, no Tome needed".
+
+INFERRED TOME SOURCES
+---------------------
+Data/TomesInferred.lua covers the 20 Tome-locked Echoes that NO published
+source says anything about. Checked 2026-09-01 against all three:
+  * project-ebonhold.com's own /assets/dbc/echoes.json -- flags "tome": true
+    but carries no location field at all, for any Echo.
+  * worldofechoes.pages.dev /assets/data/tomes.json -- 128 Tomes, 173
+    location rows, none of them these. Our Data/Tomes.lua is already an exact
+    match for it, so re-snapshotting will NOT fill these in.
+  * EbonholdHub's own EchoMapData.lua -- embeds that same map data.
+
+So these rows are derived, and are labelled "(inferred)" everywhere they
+appear. Three signals agree:
+  1. The 20 hold groupIds 286-305 -- the highest 20 of 305 in the whole
+     database, i.e. the newest content tier, exactly what a crowd-sourced
+     map lags on.
+  2. Their Echo ids run in strict Icecrown Citadel boss order, then strict
+     Ruby Sanctum boss order.
+  3. Each one's effect text quotes its boss's signature ability verbatim
+     (Coldflame, Mana Barrier, Malleable Goo, Permeating Chill, Harvest
+     Soul, Warborn Reflection, Fiery Combustion...). Each row records its
+     own evidence in a `basis` field, shown in the tooltip.
+The pattern is confirmed by rows the map DOES have: Sapphiron drops Chill of
+the Bone Wyrm, Kel'Thuzad drops Call of the Lich King, Sartharion drops
+Cinders of the Sanctum. Ebonhold's own help page states the rule outright:
+"Broodmother's Fury can be found on Onyxia".
+
+Two rows (Scent of Blood -> Deathbringer Saurfang, Sundered Formation ->
+General Zarithrian) rest on encounter-order position rather than a quoted
+ability name. Those carry confidence="low" and say so in the tooltip.
+
+No x/y coordinates are recorded, deliberately -- those can't be derived, and
+a plausible-looking wrong pin is worse than no pin.
+
+Sourced data always wins: if Data/Tomes.lua ever gains a real row for one of
+these, the inferred one goes quiet automatically. Delete it at that point --
+there's a test that fails if an inferred row outlives its usefulness.
 
 KNOWN ECHO DETECTION
 ---------------------
@@ -152,8 +206,10 @@ creates the shared namespace (`ns`) the other files read from, using WoW's
 own private per-addon table -- nothing is added to _G. Paths in the .toc use
 backslashes, which is what the client's parser expects for subdirectories.
 
-  Data/         static snapshots (auto-generated; do not hand-edit)
-    Data/Echoes.lua, Data/Tomes.lua
+  Data/         Echoes.lua, Tomes.lua -- static snapshots (auto-generated;
+                do not hand-edit). TomesInferred.lua -- hand-written
+                derivations, kept out of the snapshots on purpose so a
+                regeneration can't silently launder them into sourced data.
   Init.lua      namespace, constants, theme, the tab registry
   Widgets.lua   flat button / checkbox / scrolling list primitives
   DB.lua        saved variables
@@ -213,6 +269,12 @@ Both are point-in-time snapshots. If Ebonhold patches Echoes or someone maps
 a new Tome location, this addon won't know until it's rebuilt against fresh
 data -- it does not phone home or auto-update (no addon does, on a private
 server or otherwise).
+
+The exception is Data/TomesInferred.lua, which is NOT sourced from either:
+it is our own derivation for the 20 Tome-locked Echoes no published source
+covers, and everything from it is labelled "(inferred)" in the UI. See
+INFERRED TOME SOURCES above for how those were derived and how far to trust
+them.
 
 This is an unofficial, fan-made tool. Not affiliated with Project Ebonhold.
 

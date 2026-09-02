@@ -29,6 +29,7 @@ local ClassMaskToColoredString = ns.ClassMaskToColoredString
 local RoleListToString = ns.RoleListToString
 local GetFilteredEchoes = ns.GetFilteredEchoes
 local LocationSummary = ns.LocationSummary
+local InferredLocationSummary = ns.InferredLocationSummary
 local ShowTomeTooltip = ns.ShowTomeTooltip
 
 -- Widgets owned by this tab, populated in BuildChecklistTab.
@@ -62,8 +63,8 @@ local function ChecklistRowFactory(parent, i)
   row.locText:SetWidth(250)
 
   row:SetScript("OnEnter", function(self)
-    if not self.tomeId then return end
-    ShowTomeTooltip(self, self.tomeId)
+    if not self.entry then return end
+    ShowTomeTooltip(self, self.entry.tomeId, self.entry.echo, self.entry.inferred)
   end)
   row:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
@@ -71,11 +72,11 @@ local function ChecklistRowFactory(parent, i)
 end
 
 local function ChecklistUpdateRow(row, entry)
-  row.tomeId = entry.tomeId
-  local found = ns.activeWishlistFound[entry.tomeId]
+  row.entry = entry
+  local found = ns.activeWishlistFound[entry.key]
 
   local c = QUALITY_COLORS[entry.echo.q]
-  row.nameText:SetText(entry.tome.name)
+  row.nameText:SetText(entry.name)
   if found then
     row.nameText:SetTextColor(0.5, 0.5, 0.5)
   else
@@ -83,7 +84,18 @@ local function ChecklistUpdateRow(row, entry)
   end
 
   row.knownText:SetText(EC.IsEchoKnown(entry.echo) and "|cff4ade80known|r" or "")
-  row.locText:SetText(LocationSummary(entry.locs))
+  -- Three distinct states, deliberately worded apart so a derived guess never
+  -- reads like something the farming map actually documents:
+  --   tome + locs  -> the real thing (or "Location not documented yet")
+  --   inferred     -> our own derivation, tagged as such
+  --   neither      -> we genuinely have nothing
+  if entry.tome then
+    row.locText:SetText(LocationSummary(entry.locs))
+  elseif entry.inferred then
+    row.locText:SetText(InferredLocationSummary(entry.inferred))
+  else
+    row.locText:SetText("|cff886644No Tome recorded in this data snapshot|r")
+  end
 end
 
 local checklistShowCompleted = false
@@ -91,6 +103,64 @@ local checklistShowCompleted = false
 function EC.SetChecklistShowCompleted(show)
   checklistShowCompleted = show and true or false
   EC.RefreshChecklist()
+end
+
+-- Resolves the Tome an Echo needs, or nil when our Tome snapshot has no row
+-- for it. Also returns the key its found-state lives under: normally the Tome
+-- id, but Tome-less entries need a key of their own or they'd all collide on
+-- one slot and tick each other off.
+local function ResolveTome(echoId)
+  local tomeId = EchoCodexEchoToTome[echoId]
+  local tome = tomeId and EchoCodexTomes[tomeId]
+  if not tome then return nil, nil, "echo:" .. echoId end
+  return tomeId, tome, tomeId
+end
+
+-- Builds the entry list for the active wishlist, sorted for display. Split
+-- out of RefreshChecklist so the tests can exercise it without a frame.
+--
+-- Whether an Echo needs a Tome is the Echo's own `t` flag -- the same signal
+-- the Browse filter and "/eco cleanup" use. EchoCodexEchoToTome is a SEPARATE
+-- and less complete snapshot, so gating on it (as this did) silently dropped
+-- every Tome-locked Echo whose Tome isn't in our Tome data: exactly the ones
+-- you can't look up elsewhere either. Those are listed here without Tome
+-- detail rather than hidden, and never counted as auto-learned.
+function EC.GetMissingTomeEntries()
+  local entries, nonTome = {}, 0
+
+  for echoId in pairs(ns.activeWishlistItems) do
+    local echo = EchoCodexDataEchoes[echoId]
+    if echo then
+      if echo.t then
+        local tomeId, tome, key = ResolveTome(echoId)
+        entries[#entries + 1] = {
+          echoId = echoId,
+          echo = echo,
+          tomeId = tomeId,
+          tome = tome,
+          key = key,
+          name = tome and tome.name or echo.n,
+          locs = tomeId and EchoCodexLocations[tomeId] or nil,
+          -- Only ever consulted when there's no real Tome record: sourced
+          -- data always wins over our own derivation.
+          inferred = (not tome) and EchoCodexInferredLocations[echoId] or nil,
+        }
+      else
+        nonTome = nonTome + 1
+      end
+    end
+  end
+
+  table.sort(entries, function(a, b)
+    local fa = ns.activeWishlistFound[a.key] and 1 or 0
+    local fb = ns.activeWishlistFound[b.key] and 1 or 0
+    if fa ~= fb then return fa < fb end
+    if a.echo.q ~= b.echo.q then return a.echo.q > b.echo.q end
+    if a.name ~= b.name then return a.name < b.name end
+    return a.echoId < b.echoId
+  end)
+
+  return entries, nonTome
 end
 
 -- Auto-populates from the active wishlist (any Tome-locked item shows up
@@ -101,59 +171,34 @@ end
 function EC.RefreshChecklist()
   EC.RefreshOwnedCache()
 
-  local allEntries = {}
-  for echoId in pairs(ns.activeWishlistItems) do
-    local tomeId = EchoCodexEchoToTome[echoId]
-    local echo = EchoCodexDataEchoes[echoId]
-    if tomeId and echo then
-      local tome = EchoCodexTomes[tomeId]
-      if tome then
-        allEntries[#allEntries + 1] = {
-          echoId = echoId,
-          echo = echo,
-          tomeId = tomeId,
-          tome = tome,
-          locs = EchoCodexLocations[tomeId],
-        }
-      end
-    end
-  end
-
   -- Auto-check off anything the character already knows, so the list only
-  -- ever asks you to manually track down what you're actually missing.
-  for _, e in ipairs(allEntries) do
-    if not ns.activeWishlistFound[e.tomeId] and EC.IsEchoKnown(e.echo) then
-      ns.activeWishlistFound[e.tomeId] = true
+  -- ever asks you to manually track down what you're actually missing. Done
+  -- before GetMissingTomeEntries, whose sort reads the same flags, so the
+  -- ordering matches what's displayed.
+  for echoId in pairs(ns.activeWishlistItems) do
+    local echo = EchoCodexDataEchoes[echoId]
+    if echo and echo.t and EC.IsEchoKnown(echo) then
+      local _, _, key = ResolveTome(echoId)
+      ns.activeWishlistFound[key] = true
     end
   end
 
-  table.sort(allEntries, function(a, b)
-    local fa = ns.activeWishlistFound[a.tomeId] and 1 or 0
-    local fb = ns.activeWishlistFound[b.tomeId] and 1 or 0
-    if fa ~= fb then return fa < fb end
-    if a.echo.q ~= b.echo.q then return a.echo.q > b.echo.q end
-    return a.tome.name < b.tome.name
-  end)
+  local allEntries, nonTome = EC.GetMissingTomeEntries()
 
   local foundCount = 0
   for _, e in ipairs(allEntries) do
-    if ns.activeWishlistFound[e.tomeId] then foundCount = foundCount + 1 end
+    if ns.activeWishlistFound[e.key] then foundCount = foundCount + 1 end
   end
 
   local visible = allEntries
   if not checklistShowCompleted then
     visible = {}
     for _, e in ipairs(allEntries) do
-      if not ns.activeWishlistFound[e.tomeId] then visible[#visible + 1] = e end
+      if not ns.activeWishlistFound[e.key] then visible[#visible + 1] = e end
     end
   end
 
   checklistList:SetData(visible)
-
-  local nonTome = 0
-  for echoId in pairs(ns.activeWishlistItems) do
-    if not EchoCodexEchoToTome[echoId] then nonTome = nonTome + 1 end
-  end
 
   local msg = string.format("\"%s\": %d / %d Tomes found", ns.charDB.activeWishlist or "?", foundCount, #allEntries)
   if not checklistShowCompleted and foundCount > 0 then

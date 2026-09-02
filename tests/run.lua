@@ -472,6 +472,119 @@ test("export round-trips through import", function()
 end)
 
 ----------------------------------------------------------------------
+-- Tests: missing tomes
+----------------------------------------------------------------------
+
+print("\n-- missing tomes --")
+
+-- Picks one wishlist-able Echo of each shape the Missing Tomes tab has to
+-- handle. Read out of the real data rather than hardcoded, so a data
+-- refresh that renumbers ids can't quietly turn these into no-ops.
+local function findEchoes()
+  local mapped, unmapped, auto
+  for id, e in pairs(EchoCodexDataEchoes) do
+    if e.t and EchoCodexEchoToTome[id] and EchoCodexTomes[EchoCodexEchoToTome[id]] then
+      if not mapped or id < mapped then mapped = id end
+    elseif e.t then
+      if not unmapped or id < unmapped then unmapped = id end
+    else
+      if not auto or id < auto then auto = id end
+    end
+  end
+  return mapped, unmapped, auto
+end
+
+test("Tome-locked Echoes with no Tome record are still listed as missing", function()
+  -- The regression this tab shipped with: entries were built by looking up
+  -- EchoCodexEchoToTome, so a Tome-locked Echo absent from that map was
+  -- dropped entirely -- invisible on the one screen meant to list it.
+  local ns = loadAddonReady()
+  local mapped, unmapped = findEchoes()
+  assertTrue(unmapped, "data has a Tome-locked Echo with no Tome record")
+
+  ns.activeWishlistItems[mapped] = true
+  ns.activeWishlistItems[unmapped] = true
+
+  local entries, nonTome = ns.EC.GetMissingTomeEntries()
+  assertEq(#entries, 2, "entry count")
+  assertEq(nonTome, 0, "neither counts as auto-learned")
+
+  local byId = {}
+  for _, e in ipairs(entries) do byId[e.echoId] = e end
+  assertTrue(byId[unmapped], "unmapped Echo listed")
+  assertEq(byId[unmapped].tome, nil, "no Tome record to attach")
+  assertEq(byId[unmapped].name, EchoCodexDataEchoes[unmapped].n, "falls back to the Echo name")
+  assertTrue(byId[mapped].tome, "mapped Echo keeps its Tome record")
+end)
+
+test("entries with no Tome record get distinct found-state keys", function()
+  -- Found state is keyed by Tome id; two Tome-less entries sharing one key
+  -- would tick each other off.
+  local ns = loadAddonReady()
+  local seen, count = {}, 0
+  for id, e in pairs(EchoCodexDataEchoes) do
+    if e.t and not EchoCodexEchoToTome[id] and count < 5 then
+      ns.activeWishlistItems[id] = true
+      count = count + 1
+    end
+  end
+  assertTrue(count > 1, "more than one Tome-less Echo to compare")
+
+  for _, entry in ipairs(ns.EC.GetMissingTomeEntries()) do
+    assertTrue(entry.key, "entry has a key")
+    assertFalse(seen[entry.key], "key " .. tostring(entry.key) .. " is unique")
+    seen[entry.key] = true
+  end
+end)
+
+test("entries with no Tome record pick up an inferred source when we have one", function()
+  local ns = loadAddonReady()
+  local inferredId = next(EchoCodexInferredLocations)
+  assertTrue(inferredId, "inferred data is non-empty")
+  ns.activeWishlistItems[inferredId] = true
+
+  local entries = ns.EC.GetMissingTomeEntries()
+  assertEq(#entries, 1, "listed")
+  assertEq(entries[1].tome, nil, "still no real Tome record")
+  assertTrue(entries[1].inferred, "inferred source attached")
+  assertTrue(ns.InferredLocationSummary(entries[1].inferred):find("inferred", 1, true),
+    "summary is labelled as inferred")
+end)
+
+test("a real Tome record always beats an inferred one", function()
+  -- If the farming map ever covers one of these, the sourced row has to win
+  -- and the derived one must go quiet without needing to be deleted first.
+  local ns = loadAddonReady()
+  local inferredId = next(EchoCodexInferredLocations)
+  EchoCodexEchoToTome[inferredId] = "tome-accelerated-decay"
+
+  ns.activeWishlistItems[inferredId] = true
+  local entries = ns.EC.GetMissingTomeEntries()
+  assertEq(#entries, 1, "listed")
+  assertTrue(entries[1].tome, "uses the real Tome record")
+  assertEq(entries[1].inferred, nil, "inferred source suppressed")
+end)
+
+test("auto-learned Echoes are counted separately, not listed", function()
+  local ns = loadAddonReady()
+  local _, _, auto = findEchoes()
+  ns.activeWishlistItems[auto] = true
+
+  local entries, nonTome = ns.EC.GetMissingTomeEntries()
+  assertEq(#entries, 0, "nothing to track down")
+  assertEq(nonTome, 1, "counted as auto-learned")
+end)
+
+test("wishlist ids the data snapshot doesn't know are counted as neither", function()
+  local ns = loadAddonReady()
+  ns.activeWishlistItems[999999] = true
+
+  local entries, nonTome = ns.EC.GetMissingTomeEntries()
+  assertEq(#entries, 0, "not listed")
+  assertEq(nonTome, 0, "not miscounted as auto-learned")
+end)
+
+----------------------------------------------------------------------
 -- Tests: filtering
 ----------------------------------------------------------------------
 
@@ -538,6 +651,32 @@ test("every Echo->Tome mapping points at a real Echo and a real Tome", function(
     assertTrue(EchoCodexDataEchoes[echoId], "echo " .. echoId .. " exists")
     assertTrue(EchoCodexTomes[tomeId], "tome " .. tostring(tomeId) .. " exists")
   end
+end)
+
+test("every inferred source is still needed, and well formed", function()
+  -- The point of this one is the "still needed" half: an inferred row for an
+  -- Echo the farming map has since covered is dead weight that can only
+  -- disagree with sourced data, so it should be deleted, not left to rot.
+  loadAddon()
+  local n = 0
+  for echoId, inf in pairs(EchoCodexInferredLocations) do
+    local echo = EchoCodexDataEchoes[echoId]
+    assertTrue(echo, "echo " .. echoId .. " exists")
+    assertTrue(echo.t, "echo " .. echoId .. " is Tome-locked")
+    local tomeId = EchoCodexEchoToTome[echoId]
+    assertFalse(tomeId and EchoCodexTomes[tomeId],
+      "echo " .. echoId .. " (" .. echo.n .. ") still has no sourced Tome -- delete its inferred row if it does")
+    assertTrue(EchoCodexZones[inf.zone], "zone " .. tostring(inf.zone))
+    assertTrue(type(inf.placeName) == "string" and inf.placeName ~= "", "placeName on " .. echoId)
+    assertTrue(inf.mobs and #inf.mobs > 0, "mobs on " .. echoId)
+    assertTrue(type(inf.basis) == "string" and inf.basis ~= "", "basis on " .. echoId)
+    -- No coordinates: they can't be derived, and a wrong pin beats no pin
+    -- only in the sense of being worse.
+    assertEq(inf.x, nil, "no x on " .. echoId)
+    assertEq(inf.y, nil, "no y on " .. echoId)
+    n = n + 1
+  end
+  assertTrue(n > 0, "inferred data is non-empty")
 end)
 
 test("every documented drop location names a known zone", function()
