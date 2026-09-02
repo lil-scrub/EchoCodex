@@ -1,6 +1,6 @@
 -- Echo Codex
 -- Search Project Ebonhold's Echoes, build a wishlist, and check off Tomes as you find them.
--- Data is a static snapshot (see Data_Echoes.lua / Data_Tomes.lua) -- it will drift from the
+-- Data is a static snapshot (see Data/Echoes.lua / Data/Tomes.lua) -- it will drift from the
 -- live server as Echoes get added or rebalanced. Report stale data in the Ebonhold Discord.
 --
 -- This file holds ownership detection, the four tabs, and the main frame.

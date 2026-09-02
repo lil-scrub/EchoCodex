@@ -1,8 +1,8 @@
 -- Echo Codex -- formatting, filtering, and tooltip helpers.
 --
 -- Reads the static data snapshots (EchoCodexDataEchoes / EchoCodexTomes /
--- EchoCodexLocations / EchoCodexZones from Data_Echoes.lua and
--- Data_Tomes.lua) but holds no mutable addon state of its own.
+-- EchoCodexLocations / EchoCodexZones from Data/Echoes.lua and
+-- Data/Tomes.lua) but holds no mutable addon state of its own.
 
 local ADDON_NAME, ns = ...
 

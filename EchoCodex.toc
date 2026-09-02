@@ -13,8 +13,8 @@
 # with no dependencies. Tabs register themselves into ns.tabs, so they must
 # load before Core.lua builds the main frame from that registry.
 
-Data\Data_Echoes.lua
-Data\Data_Tomes.lua
+Data\Echoes.lua
+Data\Tomes.lua
 
 Init.lua
 Widgets.lua

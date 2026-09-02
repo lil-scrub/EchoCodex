@@ -8,7 +8,7 @@ and check off Tomes as you find them -- with drop locations included.
 INSTALL
 -------
 1. Unzip this so you end up with a folder literally named "EchoCodex"
-   containing EchoCodex.toc, Core.lua, Data_Echoes.lua, Data_Tomes.lua.
+   containing EchoCodex.toc, Core.lua, Data/Echoes.lua, Data/Tomes.lua.
 2. Drop that "EchoCodex" folder into:
      World of Warcraft\Interface\AddOns\
    (so the .toc file is at ...\AddOns\EchoCodex\EchoCodex.toc)
@@ -153,7 +153,7 @@ own private per-addon table -- nothing is added to _G. Paths in the .toc use
 backslashes, which is what the client's parser expects for subdirectories.
 
   Data/         static snapshots (auto-generated; do not hand-edit)
-    Data_Echoes.lua, Data_Tomes.lua
+    Data/Echoes.lua, Data/Tomes.lua
   Init.lua      namespace, constants, theme, the tab registry
   Widgets.lua   flat button / checkbox / scrolling list primitives
   DB.lua        saved variables
